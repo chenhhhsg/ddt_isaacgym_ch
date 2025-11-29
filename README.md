@@ -8,12 +8,6 @@
    - `cd isaacgym/python && pip install -e .`
    - Try running an example `cd examples && python 1080_balls_of_solitude.py`
    - For troubleshooting check docs `isaacgym/docs/index.html`)
-4. Install rsl_rl (PPO implementation)
-   - Clone https://github.com/leggedrobotics/rsl_rl
-   -  `cd rsl_rl && git checkout v1.0.2 && pip install -e .` 
-5. Install legged_gym
-    - Clone this repository
-   - `cd legged_gym && pip install -e .`
 
 ### CODE STRUCTURE ###
 1. Each environment is defined in an config file (`$ROBOT_$TERRAIN_config.py`) in `configs`, such as `d1_flat_config.py`. Task `d1_flat_config.py` as an example. The config file contains: 
@@ -78,7 +72,6 @@
 
 The project uses some code from the following open-source code repositories:
 - [legged_gym](https://github.com/leggedrobotics/legged_gym)
-- [rsl_rl](https://github.com/leggedrobotics/rsl_rl)
 - [LocomotionWithNP3O](https://github.com/zeonsunlightyu/LocomotionWithNP3O)
 
 ## Any Questions?
