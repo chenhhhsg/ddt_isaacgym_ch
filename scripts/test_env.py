@@ -44,6 +44,7 @@ from global_config import ROOT_DIR
 
 from PIL import Image as im
 
+
 def test_env(args):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     # override some parameters for testing

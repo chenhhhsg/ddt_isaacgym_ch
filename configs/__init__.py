@@ -6,3 +6,5 @@ from .base.legged_robot import *
 from. import tita
 from. import d1h
 from. import d1
+from. import d1f
+from. import d1f_12DOF

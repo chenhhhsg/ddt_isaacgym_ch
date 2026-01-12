@@ -1,4 +1,5 @@
 from utils.task_registry import task_registry
+
 from .d1h_flat_config import *
 task_registry.register("d1h_flat",D1HFlat,D1HFlatCfg(),D1HFlatCfgPPO())
 task_registry.register("d1h_flat_play",D1HFlat,D1HFlatCfg_Play(),D1HFlatCfgPPO())

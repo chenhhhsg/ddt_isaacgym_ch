@@ -11,7 +11,18 @@ class D1Flat(LeggedRobot):
         super()._init_buffers()
         self.hip_joint_indices = [0, 4, 8, 12]
         self.foot_joint_indices = [3, 7, 11, 15]
-    
+                # 假定 feet 顺序 FL, FR, RL, RR
+        vec_l = self.feet_pos[:, 0, :] - self.feet_pos[:, 2, :]  # FL - RL
+        vec_r = self.feet_pos[:, 1, :] - self.feet_pos[:, 3, :]  # FR - RR
+
+        # 世界向量转机体坐标（quat_rotate_inverse 只需要方向，不需要平移）
+        vec_l_body = quat_rotate_inverse(self.base_quat, vec_l)
+        vec_r_body = quat_rotate_inverse(self.base_quat, vec_r)
+
+        left_span  = torch.abs(vec_l_body[:, 0]).mean()
+        right_span = torch.abs(vec_r_body[:, 0]).mean()
+        print(f"body-frame span x: left={left_span.item():.3f}m right={right_span.item():.3f}m")
+        
     def _reset_root_states(self, env_ids):
         """ Resets ROOT states position and velocities of selected environmments
             Sets base position based on the curriculum
@@ -358,7 +369,7 @@ class D1FlatCfg( LeggedRobotCfg ):
             dof_vel = 0.0
             dof_acc = -2.5e-7
             base_height = -1.0
-            feet_air_time = 0.
+            feet_air_time = 0.0
             collision = -1.0
             feet_stumble = 0.0
             action_rate = -0.01
@@ -395,7 +406,7 @@ class D1FlatCfg( LeggedRobotCfg ):
             default_joint = 0.0
 
     class terrain(LeggedRobotCfg.terrain):
-        mesh_type = 'trimesh'  # "heightfield" # none, plane, heightfield or trimesh
+        mesh_type = 'plane'  # "heightfield" # none, plane, heightfield or trimesh
         curriculum = True
         measure_heights = True
         include_act_obs_pair_buf = False
@@ -414,7 +425,8 @@ class D1FlatCfg_Play( D1FlatCfg ):
     class env(D1FlatCfg.env):
         num_envs = 10
     class terrain(D1FlatCfg.terrain):
-        mesh_type = 'trimesh'  # "heightfield" # none, plane, heightfield or trimesh
+        mesh_type = 'plane'  # "heightfield" # none, plane, heightfield or trimesh
+        # mesh_type = 'plane'
         num_rows = 5
         num_cols = 5
         # terrain types: [smooth slope, rough slope, stairs up, stairs down, discrete]
@@ -444,7 +456,7 @@ class D1FlatCfg_Play( D1FlatCfg ):
     class commands( D1FlatCfg.commands ):
         heading_command = True  # if true: compute ang vel command from heading error
         class ranges:
-            lin_vel_x = [3.0, 0.0]  # min max [m/s]
+            lin_vel_x = [0.0, 0.0]  # min max [m/s]
             lin_vel_y = [-0.0, 0.0]  # min max [m/s]
             ang_vel_yaw = [-0, 0]  # min max [rad/s]
             heading = [-0.0, 0.0]

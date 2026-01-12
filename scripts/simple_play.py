@@ -5,6 +5,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from configs import *
 from isaacgym import gymapi
+
 from modules import *
 from utils import  get_args, export_policy_as_jit, task_registry, Logger, get_load_path
 from utils.helpers import class_to_dict
@@ -177,7 +178,7 @@ def play(args):
     # print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10))
 
 if __name__ == '__main__':
-    RECORD_FRAMES = True
-    PLOT_STATES = True
+    RECORD_FRAMES = False
+    PLOT_STATES = False
     args = get_args()
     play(args)

@@ -42,12 +42,9 @@ class OnConstraintPolicyRunner:
                                                       **self.policy_cfg)
         print("Policy architecture: ",actor_critic)
         if self.cfg['resume']:
-            log_root = os.path.join(ROOT_DIR, 'logs', self.cfg['experiment_name'], self.cfg['resume_path'])
-            resume_path = get_load_path(log_root, load_run=self.cfg['load_run'], checkpoint=self.cfg['checkpoint'])
-            print("Resume model from: ",resume_path)
-            model_dict = torch.load(resume_path)
+            model_dict = torch.load(os.path.join(ROOT_DIR, self.cfg['resume_path']))
             actor_critic.load_state_dict(model_dict['model_state_dict'])
-        
+
         actor_critic.to(self.device)
 
         # Create algorithm

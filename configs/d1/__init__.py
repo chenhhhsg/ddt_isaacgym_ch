@@ -6,3 +6,4 @@ task_registry.register("d1_rough_play",D1Rough,D1RoughCfg_Play(),D1RoughCfgPPO()
 from .d1_flat_config import *
 task_registry.register("d1_flat",D1Flat,D1FlatCfg(),D1FlatCfgPPO())
 task_registry.register("d1_flat_play",D1Flat,D1FlatCfg_Play(),D1FlatCfgPPO())
+

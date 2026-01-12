@@ -53,8 +53,8 @@ class LeggedRobot(BaseTask):
         self.init_done = True
         self.global_counter = 0
 
-        # self.reset_idx(torch.arange(self.num_envs, device=self.device))
-        # self.post_physics_step()
+        self.reset_idx(torch.arange(self.num_envs, device=self.device))
+        self.post_physics_step()
 
     #------------ enviorment core ----------------
     def _init_buffers(self):
@@ -75,19 +75,18 @@ class LeggedRobot(BaseTask):
         self.gym.refresh_force_sensor_tensor(self.sim)
 
         # create some wrapper tensors for different slices
-        self.root_states = gymtorch.wrap_tensor(actor_root_state)
-        self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state_tensor).view(self.num_envs, -1, 13)
+        self.root_states = gymtorch.wrap_tensor(actor_root_state)  # 每个 env 的 base 根状态（基座状态）
+        self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state_tensor).view(self.num_envs, -1, 13) # 世界坐标系。每个刚体的 13 维状态 （base+连杆等）
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
-        self.base_quat = self.root_states[:, 3:7]
+        self.base_quat = self.root_states[:, 3:7]  # 四元数，用于坐标转换
 
-        self.feet_pos = self.rigid_body_states[:, self.feet_indices, 0:3]
-        self.feet_vel = self.rigid_body_states[:, self.feet_indices, 7:10]
+        self.feet_pos = self.rigid_body_states[:, self.feet_indices, 0:3]  # 世界坐标系下的足端位置
+        self.feet_vel = self.rigid_body_states[:, self.feet_indices, 7:10] # 世界坐标系下的足端线速度
    
         self.force_sensor_tensor = gymtorch.wrap_tensor(force_sensor_tensor).view(self.num_envs, len(self.feet_indices), 6) # for feet only, see create_env()
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
-
         # initialize some data used later on
         self.common_step_counter = 0
         self.extras = {}
@@ -229,7 +228,9 @@ class LeggedRobot(BaseTask):
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
             pos = self.env_origins[i].clone()
             pos[:2] += torch_rand_float(-1., 1., (2,1), device=self.device).squeeze(1)
-            start_pose.p = gymapi.Vec3(*pos)
+
+            # spawn above the terrain by the configured base_init_state height
+            start_pose.p = gymapi.Vec3(pos[0], pos[1], pos[2] + self.base_init_state[2])
             rigid_shape_props = self._process_rigid_shape_props(rigid_shape_props_asset, i)
             self.gym.set_asset_rigid_shape_properties(robot_asset, rigid_shape_props)
             actor_handle = self.gym.create_actor(env_handle, robot_asset, start_pose, self.cfg.asset.name, i, self.cfg.asset.self_collisions, 0)
@@ -315,7 +316,7 @@ class LeggedRobot(BaseTask):
         return self.obs_buf,self.privileged_obs_buf,self.rew_buf,self.cost_buf,self.reset_buf, self.extras
     
     def compute_observations(self):
-
+        # 3 + 3 + 3 + 3 + 16 + 16+ 16 = 60
         obs_buf =torch.cat((self.base_lin_vel * self.obs_scales.lin_vel,
                             self.base_ang_vel  * self.obs_scales.ang_vel,
                             self.projected_gravity,
@@ -658,6 +659,11 @@ class LeggedRobot(BaseTask):
         self._reset_dofs(env_ids)
         self._reset_root_states(env_ids)
         self._resample_commands(env_ids)
+        self.gym.refresh_dof_state_tensor(self.sim)
+        
+        self.gym.refresh_actor_root_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_net_contact_force_tensor(self.sim)
 
         # reset buffers
         self.last_actions[env_ids] = 0.
@@ -1066,7 +1072,6 @@ class LeggedRobot(BaseTask):
             env_ids (List[int]): Environments ids for which new commands are needed
         """
         self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         if self.cfg.commands.heading_command:
             self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         else:
@@ -1104,7 +1109,7 @@ class LeggedRobot(BaseTask):
             env_ids (List[int]): ids of environments being reset
         """
         # If the tracking reward is above 80% of the maximum, increase the range of commands
-        if torch.mean(self.episode_sums["tracking_lin_vel"][env_ids]) / self.max_episode_length > 0.8 * self.reward_scales["tracking_lin_vel"]:
+        if torch.mean(self.episode_sums["tracking_lin_vel_x"][env_ids]) / self.max_episode_length > 0.8 * self.reward_scales["tracking_lin_vel_x"]:
             self.command_ranges["lin_vel_x"][0] = np.clip(self.command_ranges["lin_vel_x"][0] - 0.5, -self.cfg.commands.max_curriculum, 0.)
             self.command_ranges["lin_vel_x"][1] = np.clip(self.command_ranges["lin_vel_x"][1] + 0.5, 0., self.cfg.commands.max_curriculum)
             # self.command_ranges["lin_vel_y"][0] = np.clip(self.command_ranges["lin_vel_y"][0] - 0.5, -self.cfg.commands.max_curriculum, 0.)
