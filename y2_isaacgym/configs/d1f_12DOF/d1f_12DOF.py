@@ -40,6 +40,7 @@ class D1F12DOF(LeggedRobot):
         random_pitch = torch_rand_float(0, 0, (len(env_ids),1), device=self.device).squeeze(1)
         random_yaw = torch_rand_float(-np.pi, np.pi, (len(env_ids),1), device=self.device).squeeze(1)
         self.root_states[env_ids, 3:7] = quat_from_euler_xyz(random_roll, random_pitch, random_yaw)
+
         # base velocities
         self.root_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
         self.root_states[env_ids, 8:10] = 0.0  # zero y linear velocity
@@ -120,9 +121,9 @@ class D1F12DOF(LeggedRobot):
 
         self._post_physics_step_callback()
 
-        # roll, _, _ = get_euler_xyz(self.base_quat)
+        # g_y = self.projected_gravity[:, 1]
         # if self.common_step_counter % 200 == 0:
-        #     print(f"[roll_sign] roll={roll[0]:+.3f}")
+        #     print(f"[tilt] g_y={g_y[0]:+.3f}")
 
         # compute observations, rewards, resets, ...
         self.check_termination()

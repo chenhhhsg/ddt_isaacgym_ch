@@ -24,8 +24,8 @@ class D1F12DOFFlatCfg( LeggedRobotCfg ):
         default_joint_angles = { # = target angles [rad] when action = 0.0
             'FL_thigh_joint': 0.8,     # [rad]
             'FR_thigh_joint': 0.8,     # [rad]
-            'RL_thigh_joint': 1.0,   # [rad]
-            'RR_thigh_joint': 1.0,   # [rad]
+            'RL_thigh_joint': 0.8,   # [rad]
+            'RR_thigh_joint': 0.8,   # [rad]
 
             'FL_calf_joint': -1.5,   # [rad]
             'FR_calf_joint': -1.5,  # [rad]
@@ -115,20 +115,21 @@ class D1F12DOFFlatCfg( LeggedRobotCfg ):
         soft_torque_limit = 0.9
         base_height_target = 0.45
         max_contact_force = 500.  # forces above this value are penalized
-        feet_x_distance_target = 0.35
+        feet_x_distance_target = 0.30
         feet_x_distance_sigma = 0.5
+        roll_max = 45  # 转弯允许最大倾斜角
         # feet_y_distance_target = 0.474
 
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = 0.0
             powers = 0.0#-2e-5
             termination = 0.0
-            tracking_ang_vel = 20.0
+            tracking_ang_vel = 10.0
             lin_vel_z = -2.0
-            tracking_lin_vel_x = 20.0
+            tracking_lin_vel_x = 15.0
             tracking_lin_vel = 0.0
-            orientation = -1.0         # 基础惩罚 (Combined Roll + Pitch)
-            orientation_pitch = -2.0   # 强力惩罚 Pitch
+            orientation = -0.0         # 基础惩罚 (Combined Roll + Pitch)
+            orientation_pitch = -3.0   # 强力惩罚 Pitch
             orientation_roll = -1.0    # 适度惩罚 Roll
             ang_vel_xy = -0.05
             feet_air_time = 0.0
@@ -146,9 +147,8 @@ class D1F12DOFFlatCfg( LeggedRobotCfg ):
             upward = 0.5
             feet_all_contact = 10.0  
             feet_x_distance = -30.0
-            roll_bias = 0
-            roll_turn_assist = 10.0
-            # body_feet_distance_x = -5.0
+            roll_turn_assist = 5.0
+
 
             
     class costs(LeggedRobotCfg.costs):
@@ -167,7 +167,7 @@ class D1F12DOFFlatCfg( LeggedRobotCfg ):
 
     class terrain(LeggedRobotCfg.terrain):
         mesh_type = 'plane'  # "heightfield" # none, plane, heightfield or trimesh
-        # mesh_type ='plane'
+        # mesh_type ='trimesh'
         curriculum = True
         measure_heights = True
         include_act_obs_pair_buf = False
@@ -238,11 +238,18 @@ class D1F12DOFFlat(D1F12DOF):
         # Penalize non flat base orientation
         return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1)
  
+    # def _reward_orientation_roll(self):
+    #     # Penalize Roll only (g_y^2)
+    #     gate = torch.abs(self.commands[:, 2] > 0.1).float
+    #     return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(self.projected_gravity[:, 1])
+
     def _reward_orientation_roll(self):
-        # Penalize Roll only (g_y^2)
-        # 对应原来的 orientation_y，但可能给予较小的惩罚
-        return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(self.projected_gravity[:, 1])
-    
+        limit = np.sin(np.deg2rad(self.cfg.rewards.roll_max))  # 0.5
+        excess = torch.clamp(torch.abs(self.projected_gravity[:, 1]) - limit, min=0.0)
+        # print("limit:",limit)
+        # print("excess:",excess.mean())
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.square(excess)
+
     def _reward_orientation_pitch(self):
         # Penalize Pitch only (g_x^2)
         # 防止屁股朝上或后仰，这对 Fixed ABAD 很重要
@@ -268,32 +275,18 @@ class D1F12DOFFlat(D1F12DOF):
 
         deficit_l = torch.clamp(self.cfg.rewards.feet_x_distance_target - dist_l, min=0.0)
         deficit_r = torch.clamp(self.cfg.rewards.feet_x_distance_target - dist_r, min=0.0)
-
         return 0.5 * (deficit_l + deficit_r) * gate
 
     def _reward_roll_turn_assist(self):
         cmd_yaw = self.commands[:, 2]
-        roll, _, _ = get_euler_xyz(self.base_quat)
+        # Use sin(roll) directly to avoid 2π jumps
+        roll_sin = torch.clamp(self.projected_gravity[:, 1], -1.0, 1.0)
 
-        # 1) 设定转弯方向映射：
-        # 如果 cmd_yaw>0 表示“右转”，那么右倾应为正 roll -> turn_sign = +1
-        # 如果 cmd_yaw>0 表示“左转”，那么右倾应为负 roll -> turn_sign = -1
-        turn_sign = -1.0  # cmd_yaw > 0 表示左转
+        k_roll = 0.18 # sin_max / cmd_yaw 也可
+        sin_max = float(np.sin(np.deg2rad(self.cfg.rewards.roll_max)))
+        roll_sin_tgt = torch.clamp(k_roll * cmd_yaw, -sin_max, sin_max)
 
-        # 2) 设定倾斜目标
-        roll_max = 0.30   # ~17 deg
-        # 固定倾斜幅度（转弯就倾到固定角）
-        # roll_tgt = turn_sign * roll_max * torch.sign(cmd_yaw)
-        # 或比例倾斜（更平滑）：
-        k_roll = 0.30
-        roll_tgt = torch.clamp(turn_sign * k_roll * cmd_yaw, -roll_max, roll_max)
-
-        # 3) 奖励 roll 接近目标
         sigma = 0.12
-        r_roll = torch.exp(-((roll - roll_tgt) / sigma) ** 2)
-
-        # 4) 仅在有转弯指令时启用
-        gate = torch.abs(cmd_yaw > 0.1).float()
+        r_roll = torch.exp(-((roll_sin - roll_sin_tgt) / sigma) ** 2)
+        gate = (torch.abs(cmd_yaw ) > 0.1 ).float()
         return gate * r_roll
-
-   
