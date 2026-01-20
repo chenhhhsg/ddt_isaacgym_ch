@@ -117,7 +117,7 @@ class D1F12DOFFlatCfg( LeggedRobotCfg ):
         max_contact_force = 500.  # forces above this value are penalized
         feet_x_distance_target = 0.30
         feet_x_distance_sigma = 0.5
-        roll_max = 45  # 转弯允许最大倾斜角
+        roll_max = 30  # 转弯允许最大倾斜角
         # feet_y_distance_target = 0.474
 
         class scales( LeggedRobotCfg.rewards.scales ):
@@ -148,8 +148,6 @@ class D1F12DOFFlatCfg( LeggedRobotCfg ):
             feet_all_contact = 10.0  
             feet_x_distance = -30.0
             roll_turn_assist = 5.0
-
-
             
     class costs(LeggedRobotCfg.costs):
         num_costs = 4
@@ -282,7 +280,7 @@ class D1F12DOFFlat(D1F12DOF):
         # Use sin(roll) directly to avoid 2π jumps
         roll_sin = torch.clamp(self.projected_gravity[:, 1], -1.0, 1.0)
 
-        k_roll = 0.18 # sin_max / cmd_yaw 也可
+        k_roll = 0.5 # sin_max / cmd_yaw 也可
         sin_max = float(np.sin(np.deg2rad(self.cfg.rewards.roll_max)))
         roll_sin_tgt = torch.clamp(k_roll * cmd_yaw, -sin_max, sin_max)
 

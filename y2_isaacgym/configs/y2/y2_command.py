@@ -254,7 +254,144 @@ class Y2Command(LeggedRobot):
         torques *= self.motor_strength
 
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
-    
+
+    def _init_yaw_curriculum(self):
+        if hasattr(self, "_yaw_curriculum_scale"):
+            return
+        yaw_min, yaw_max = self.command_ranges["ang_vel_yaw"]
+        self._yaw_curriculum_target = (float(yaw_min), float(yaw_max))
+        self._yaw_curriculum_scale = 0.2
+        self._yaw_curriculum_step = 0.1
+        self.command_ranges["ang_vel_yaw"][0] = yaw_min * self._yaw_curriculum_scale
+        self.command_ranges["ang_vel_yaw"][1] = yaw_max * self._yaw_curriculum_scale
+
+    def _resample_commands(self, env_ids):
+        if self.cfg.commands.curriculum and not self.cfg.commands.heading_command:
+            self._init_yaw_curriculum()
+
+        self.commands[env_ids, 0] = torch_rand_float(
+            self.command_ranges["lin_vel_x"][0],self.command_ranges["lin_vel_x"][1],(len(env_ids), 1),device=self.device,).squeeze(1)
+        if self.cfg.commands.heading_command:
+            self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0],self.command_ranges["heading"][1],(len(env_ids), 1),device=self.device,).squeeze(1)
+        else:
+            self.commands[env_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0],self.command_ranges["ang_vel_yaw"][1],(len(env_ids), 1),device=self.device,).squeeze(1)
+
+        # set small commands to zero
+        self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+
+    def _update_command_curriculum(self, env_ids):
+        """ Implements a curriculum of increasing commands
+
+        Args:
+            env_ids (List[int]): ids of environments being reset
+        """
+        # If the tracking reward is above 80% of the maximum, increase the range of commands
+        if torch.mean(self.episode_sums["tracking_lin_vel_x"][env_ids]) / self.max_episode_length > 0.8 * self.reward_scales["tracking_lin_vel_x"]:
+            self.command_ranges["lin_vel_x"][0] = np.clip(self.command_ranges["lin_vel_x"][0] - 0.5, -self.cfg.commands.max_curriculum, 0.)
+            self.command_ranges["lin_vel_x"][1] = np.clip(self.command_ranges["lin_vel_x"][1] + 0.5, 0., self.cfg.commands.max_curriculum)
+            # self.command_ranges["lin_vel_y"][0] = np.clip(self.command_ranges["lin_vel_y"][0] - 0.5, -self.cfg.commands.max_curriculum, 0.)
+            # self.command_ranges["lin_vel_y"][1] = np.clip(self.command_ranges["lin_vel_y"][1] + 0.5, 0., self.cfg.commands.max_curriculum)
+
+        if not self.cfg.commands.heading_command:
+            if "tracking_ang_vel" in self.episode_sums and "tracking_ang_vel" in self.reward_scales:
+                mean_tracking = torch.mean(self.episode_sums["tracking_ang_vel"][env_ids]) / self.max_episode_length
+                if mean_tracking > 0.8 * self.reward_scales["tracking_ang_vel"]:
+                    self._init_yaw_curriculum()
+                    if self._yaw_curriculum_scale < 1.0:
+                        self._yaw_curriculum_scale = min(
+                            1.0, self._yaw_curriculum_scale + self._yaw_curriculum_step
+                        )
+                        self.command_ranges["ang_vel_yaw"][0] = (
+                            self._yaw_curriculum_target[0] * self._yaw_curriculum_scale
+                        )
+                        self.command_ranges["ang_vel_yaw"][1] = (
+                            self._yaw_curriculum_target[1] * self._yaw_curriculum_scale
+                        )
+
+    def reset_idx(self, env_ids):
+        """ Reset some environments.
+            Calls self._reset_dofs(env_ids), self._reset_root_states(env_ids), and self._resample_commands(env_ids)
+            [Optional] calls self._update_terrain_curriculum(env_ids), self.update_command_curriculum(env_ids) and
+            Logs episode info
+            Resets some buffers
+
+        Args:
+            env_ids (list[int]): List of environment ids which must be reset
+        """
+        if len(env_ids) == 0:
+            return
+        # update curriculum
+        if self.cfg.terrain.curriculum:
+            self._update_terrain_curriculum(env_ids)
+        # avoid updating command curriculum at each step since the maximum command is common to all envs
+        if self.cfg.commands.curriculum and (self.common_step_counter % self.max_episode_length==0):
+            self._update_command_curriculum(env_ids)
+
+        # reset robot states
+        self._reset_dofs(env_ids)
+        self._reset_root_states(env_ids)
+        self._resample_commands(env_ids)
+        self.gym.refresh_dof_state_tensor(self.sim)
+        
+        self.gym.refresh_actor_root_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_net_contact_force_tensor(self.sim)
+
+        # reset buffers
+        self.last_actions[env_ids] = 0.
+        self.last_dof_vel[env_ids] = 0.
+        self.last_torques[env_ids] = 0.
+        self.last_root_vel[env_ids] = 0.
+        self.feet_air_time[env_ids] = 0.
+        self.episode_length_buf[env_ids] = 0
+        self.reset_buf[env_ids] = 1
+        self.obs_history_buf[env_ids, :, :] = 0.
+        self.contact_buf[env_ids, :, :] = 0.
+        self.action_history_buf[env_ids, :, :] = 0.
+
+        # fill extras
+        self.extras["episode"] = {}
+        for key in self.episode_sums.keys():
+            self.extras["episode"]['rew_' + key] = torch.mean(self.episode_sums[key][env_ids]) / self.max_episode_length_s
+            self.episode_sums[key][env_ids] = 0.
+        for key in self.cost_episode_sums.keys():
+            self.extras["episode"]['cost_'+ key] = torch.mean(self.cost_episode_sums[key][env_ids]) / self.max_episode_length_s
+            self.cost_episode_sums[key][env_ids] = 0.
+        # log additional curriculum info
+        if self.cfg.terrain.curriculum:
+            self.extras["episode"]["terrain_level"] = torch.mean(self.terrain_levels.float())
+        if self.cfg.commands.curriculum:
+            self.extras["episode"]["max_command_x"] = self.command_ranges["lin_vel_x"][1]
+            self.extras["episode"]["max_command_yaw"] = self.command_ranges["ang_vel_yaw"][1]
+            self.extras["episode"]["yaw_curriculum_scale"] = getattr(self, "_yaw_curriculum_scale", 1.0)
+        # send timeout info to the algorithm
+        if self.cfg.env.send_timeouts:
+            self.extras["time_outs"] = self.time_out_buf
+
+        # for i in range(len(self.lag_buffer)):
+        #     self.lag_buffer[i][env_ids, :] = 0
+        self.lag_buffer[env_ids,:,:] = 0
+
+    def compute_reward(self):
+        """ Compute rewards
+            Calls each reward function which had a non-zero scale (processed in self._prepare_reward_function())
+            adds each terms to the episode sums and to the total reward
+        """
+        self.rew_buf[:] = 0.
+        for i in range(len(self.reward_functions)):
+            name = self.reward_names[i]
+            rew = self.reward_functions[i]() * self.reward_scales[name]
+            self.rew_buf += rew
+            self.episode_sums[name] += rew
+        if self.cfg.rewards.only_positive_rewards:
+            self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.)
+        # add termination reward after clipping
+        if "termination" in self.reward_scales:
+            rew = self._reward_termination() * self.reward_scales["termination"]
+            self.rew_buf += rew
+            self.episode_sums["termination"] += rew
+
+
     # ------------ cost functions----------------
     def _cost_torque_limit(self):
         # constaint torque over limit

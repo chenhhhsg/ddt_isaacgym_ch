@@ -22,15 +22,15 @@ class Y2FlatCfg( LeggedRobotCfg ):
     class init_state( LeggedRobotCfg.init_state ):
         pos = [0.0, 0.0, 0.4] # x,y,z [m]
         default_joint_angles = { # = target angles [rad] when action = 0.0
-            'front_left_thigh_joint': -0.2,     # [rad]
-            'front_right_thigh_joint': -0.2,     # [rad]
-            'back_left_thigh_joint': 0.2,   # [rad]
-            'back_right_thigh_joint': 0.2,   # [rad]
+            'front_left_thigh_joint': -0.6,     # [rad]
+            'front_right_thigh_joint': -0.6,     # [rad]
+            'back_left_thigh_joint': 0.4,   # [rad]
+            'back_right_thigh_joint': 0.4,   # [rad]
 
-            'front_left_knee_joint': 1.5,   # [rad]
-            'front_right_knee_joint': 1.5,  # [rad]
-            'back_left_knee_joint': -1.5,    # [rad]
-            'back_right_knee_joint': -1.5,    # [rad]
+            'front_left_knee_joint': 1.6,   # [rad]
+            'front_right_knee_joint': 1.6,  # [rad]
+            'back_left_knee_joint': -1.6,    # [rad]
+            'back_right_knee_joint': -1.6,    # [rad]
 
             'front_left_wheel_joint': 0.0,
             'front_right_wheel_joint': 0.0,
@@ -69,7 +69,7 @@ class Y2FlatCfg( LeggedRobotCfg ):
             lin_vel_y = [0, 0]
             ang_vel_yaw = [-1.0, 1.0] 
             heading = [-3.14, 3.14]
-
+ 
     class asset( LeggedRobotCfg.asset ):
         file = '{ROOT_DIR}/resources/y2/urdf/robot.urdf'
         foot_name = "wheel"
@@ -114,11 +114,11 @@ class Y2FlatCfg( LeggedRobotCfg ):
         soft_dof_pos_limit = 0.9  # percentage of urdf limits, values above this limit are penalized
         soft_dof_vel_limit = 0.9
         soft_torque_limit = 0.9
-        base_height_target = 0.45
+        base_height_target = 0.3  # y2的站立默认高度
         max_contact_force = 500.  # forces above this value are penalized
         feet_x_distance_target = 0.30
         feet_x_distance_sigma = 0.5
-        roll_max = 45  # 转弯允许最大倾斜角
+        roll_max = 15  # 转弯允许最大倾斜角
         # feet_y_distance_target = 0.474
 
         class scales( LeggedRobotCfg.rewards.scales ):
@@ -126,27 +126,29 @@ class Y2FlatCfg( LeggedRobotCfg ):
             powers = 0.0#-2e-5
             termination = 0.0
             tracking_ang_vel = 10.0
-            lin_vel_z = -2.0
-            tracking_lin_vel_x = 20.0
+            lin_vel_z = -3.0
+            tracking_lin_vel_x = 10.0
+            lin_vel_y = -5.0          # 惩罚y方向出现速度，不允许横移
             tracking_lin_vel = 0.0
-            orientation = -0.0         # 基础惩罚 (Combined Roll + Pitch)
+            orientation = -0.0         # 基础惩罚 (·Combined Roll + Pitch)
             orientation_pitch = -3.0   # 强力惩罚 Pitch
-            orientation_roll = -1.0    # 适度惩罚 Roll
-            ang_vel_xy = -0.05
-            feet_air_time = 0.0
+            orientation_roll = -0.5    # 适度惩罚 Roll
+            ang_vel_xy = -0.2
+            feet_air_time = -4.0
             # ang_vel_y = -1.0 # avoid flipping
             dof_pos_limits = -10.0
             dof_vel = -0.0
             dof_acc = -2.5e-7
-            base_height = -1.0
-            collision = -10.0
+            base_height = -2.0
+            collision = -1.0
             # feet_stumble = -5.0
             action_rate = -0.01
-            stand_still = 20.0
+            stand_still = -0.0
+            stand_still_vel = -10.0
             # action_smoothness= -0.01
             # foot_mirror = -0.05
             upward = 0.5
-            feet_all_contact = 10.0  
+            feet_all_contact = -10.0  
             feet_x_distance = -0.0
             roll_turn_assist = 10.0
 
@@ -218,8 +220,8 @@ class Y2FlatCfgPPO( LeggedRobotCfgPPO ):
         # policy_class_name = 'ActorCriticTransBarlowTwins'
         runner_class_name = 'OnConstraintPolicyRunner'
         algorithm_class_name = 'NP3O'
-        save_interval = 1000
-        max_iterations = 10000
+        save_interval = 2000
+        max_iterations = 6000
         num_steps_per_env = 24
         load_run = -1
         checkpoint = -1
@@ -227,10 +229,23 @@ class Y2FlatCfgPPO( LeggedRobotCfgPPO ):
         resume_path = ''
 
 class Y2Flat(Y2Command):
+
+    def _reward_stand_still_vel(self):
+        # 现在使用的是奖励
+        cmd_small = (torch.norm(self.commands[:, :2], dim=1) < 0.1).float()
+        base_lin_speed = torch.norm(self.base_lin_vel, dim=1)
+        base_ang_speed = torch.norm(self.base_ang_vel, dim=1)
+        leg_speed = torch.mean(torch.abs(self.dof_vel), dim=1)
+        deviation = base_lin_speed + base_ang_speed + leg_speed
+        reward = torch.clamp(torch.square(-deviation), -2, 2)
+        # reward = torch.exp(-deviation)
+        return cmd_small * reward
+
     def _reward_stand_still(self):
         cmd_small = (torch.norm(self.commands[:, :2], dim=1) < 0.1).float()
         deviation = torch.mean(torch.abs(self.dof_pos - self.default_dof_pos), dim=1)
-        reward = torch.exp(-deviation)
+        reward = torch.clamp(torch.square(-deviation), -2, 2)
+        # reward = torch.exp(-deviation)
         return cmd_small * reward
 
     def _reward_orientation(self):
@@ -243,7 +258,7 @@ class Y2Flat(Y2Command):
     #     return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(self.projected_gravity[:, 1])
 
     def _reward_orientation_roll(self):
-        limit = np.sin(np.deg2rad(self.cfg.rewards.roll_max))  # 0.5
+        limit = np.sin(np.deg2rad(self.cfg.rewards.roll_max + 5))  # 0.5
         excess = torch.clamp(torch.abs(self.projected_gravity[:, 1]) - limit, min=0.0)
         # print("limit:",limit)
         # print("excess:",excess.mean())
@@ -254,34 +269,34 @@ class Y2Flat(Y2Command):
         # 防止屁股朝上或后仰，这对 Fixed ABAD 很重要
         return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(self.projected_gravity[:, 0])
     
+    # def _reward_base_height(self):
+    #     # Penalize base height away from target
+    #     base_height = self._get_base_heights()
+    #     # print('base_height:',base_height.mean())
+    #     reward_height = torch.clamp(self.cfg.rewards.base_height_target - base_height, min=0.0)
+    #     return torch.clamp(-self.projected_gravity[:,2],0,1)* reward_height
+
     def _reward_base_height(self):
-        # Penalize base height away from target
+        # Penalize base height deviation from target (both too low and too high)
         base_height = self._get_base_heights()
-        return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(base_height - self.cfg.rewards.base_height_target)
-    
-    def _reward_feet_x_distance(self):
-        # yaw 指令下，机体系前/后足的 x 间距低于 target 才惩罚，否则不惩罚
-        gate = (torch.abs(self.commands[:, 2]) > 0.1).float()
+        target = self.cfg.rewards.base_height_target
 
-        # 世界坐标 -> 机体系
-        vec_l = self.feet_pos[:, 0, :] - self.feet_pos[:, 2, :]  # FL - RL
-        vec_r = self.feet_pos[:, 1, :] - self.feet_pos[:, 3, :]  # FR - RR
-        vec_l_body = quat_rotate_inverse(self.base_quat, vec_l)
-        vec_r_body = quat_rotate_inverse(self.base_quat, vec_r)
+        # deadzone: within ±3cm no penalty (tuneable)
+        err = base_height - self.cfg.rewards.base_height_target
+        deadzone = 0.03
+        err = torch.where(torch.abs(err) < deadzone, torch.zeros_like(err), err)
 
-        dist_l = torch.abs(vec_l_body[:, 0])
-        dist_r = torch.abs(vec_r_body[:, 0])
-
-        deficit_l = torch.clamp(self.cfg.rewards.feet_x_distance_target - dist_l, min=0.0)
-        deficit_r = torch.clamp(self.cfg.rewards.feet_x_distance_target - dist_r, min=0.0)
-        return 0.5 * (deficit_l + deficit_r) * gate
+        # squared error, clipped
+        penalty = torch.clamp(err * err, max=0.20)  # cap to keep stable
+        # keep your "upright gate"
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * penalty
 
     def _reward_roll_turn_assist(self):
         cmd_yaw = self.commands[:, 2]
         # Use sin(roll) directly to avoid 2π jumps
         roll_sin = torch.clamp(self.projected_gravity[:, 1], -1.0, 1.0)
 
-        k_roll = 0.20 # sin_max / cmd_yaw 也可
+        k_roll = 0.25 # sin_max / cmd_yaw 也可
         sin_max = float(np.sin(np.deg2rad(self.cfg.rewards.roll_max)))
         roll_sin_tgt = torch.clamp(k_roll * cmd_yaw, -sin_max, sin_max)
 
@@ -289,3 +304,44 @@ class Y2Flat(Y2Command):
         r_roll = torch.exp(-((roll_sin - roll_sin_tgt) / sigma) ** 2)
         gate = (torch.abs(cmd_yaw ) > 0.1 ).float()
         return gate * r_roll
+
+    # def _reward_turn_assist(self):
+    #     gate = (torch.abs(self.commands[:, 2]) > 0.1 ).float()
+
+
+    # def _reward_feet_all_contact(self):
+    #     no_contact = self.contact_forces[:, self.feet_indices, 2] < 1.
+    #     any_off_ground = (torch.sum(no_contact, dim=1) > 0).float()
+    #     return torch.clamp(-self.projected_gravity[:,2],0,1) * any_off_ground
+
+    def _reward_feet_all_contact(self):
+        # count how many feet are off ground
+        off_ground = (self.contact_forces[:, self.feet_indices, 2] < 1.0).float()
+        off_count = torch.sum(off_ground, dim=1)  # 0~4
+        # penalty proportional to how many are off
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * off_count
+
+    def _reward_feet_air_time(self):
+        """
+        Penalize long airtime (prevents "lift one leg forever" or jumping).
+        We update self.feet_air_time here because current code only resets it.
+        """
+        # contact_filt: [N,4] bool (already computed in post_physics_step) :contentReference[oaicite:4]{index=4}
+        contact = self.contact_filt
+
+        # integrate airtime
+        self.feet_air_time += (~contact).float() * self.dt
+        self.feet_air_time *= (~contact).float()  # reset to 0 when contact is True
+
+        # allow short airtime without penalty (tuneable)
+        free_time = 0.12  # 120ms free swing
+        excess = torch.clamp(self.feet_air_time - free_time, min=0.0)
+        # sum over 4 feet
+        penalty = torch.sum(excess, dim=1)
+
+        # gate with upright as you already do
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * penalty
+
+    def _reward_lin_vel_y(self):
+        vy = self.base_lin_vel[:, 1]
+        return vy * vy
