@@ -13,10 +13,59 @@ class Y2Command(LeggedRobot):
     def _init_buffers(self):
 
         super()._init_buffers()
-        self.thigh_joint_indices = [0, 3, 6, 9]
-        self.foot_joint_indices = [2, 5, 8, 11]
-        print("dof_names",self.dof_names)
-        print("feet_indices:",self.feet_indices)
+        #  dof_names 顺序得出
+        # self.thigh_joint_indices = [0, 3, 6, 9]      # BL, BR, FL, FR
+        # self.knee_joint_indices  = [1, 4, 7, 10]     # BL, BR, FL, FR
+        # self.wheel_joint_indices = [2, 5, 8, 11]     # BL, BR, FL, FR
+
+        name_to_idx = {name: i for i, name in enumerate(self.dof_names)}
+        thigh_names = [
+            "front_left_thigh_joint",
+            "front_right_thigh_joint",
+            "back_left_thigh_joint",
+            "back_right_thigh_joint",
+        ]
+        knee_names = [
+            "front_left_knee_joint",
+            "front_right_knee_joint",
+            "back_left_knee_joint",
+            "back_right_knee_joint",
+        ]
+        wheel_names = [
+            "front_left_wheel_joint",
+            "front_right_wheel_joint",
+            "back_left_wheel_joint",
+            "back_right_wheel_joint",
+        ]
+        missing = [n for n in (thigh_names + knee_names + wheel_names) if n not in name_to_idx]
+        if missing:
+            raise ValueError(f"Missing DOF names in URDF: {missing}")
+        self.thigh_joint_indices = [name_to_idx[n] for n in thigh_names]
+        self.knee_joint_indices = [name_to_idx[n] for n in knee_names]
+        self.foot_joint_indices = [name_to_idx[n] for n in wheel_names]
+        # reorder feet indices to match FL, FR, BL, BR by name (body order isn't guaranteed)
+        desired_feet = [
+            "front_left_wheel",
+            "front_right_wheel",
+            "back_left_wheel",
+            "back_right_wheel",
+        ]
+        ordered_feet_names = []
+        for key in desired_feet:
+            matches = [n for n in self.feet_names if key in n]
+            if not matches:
+                raise ValueError(f"Missing foot body name containing '{key}' in feet_names: {self.feet_names}")
+            ordered_feet_names.append(matches[0])
+        self.feet_names = ordered_feet_names
+        self.feet_indices = torch.zeros(len(self.feet_names), dtype=torch.long, device=self.device, requires_grad=False)
+        for i, name in enumerate(self.feet_names):
+            self.feet_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], name)
+        print("dof_names", self.dof_names)
+        print("thigh_joint_indices:", self.thigh_joint_indices)
+        print("knee_joint_indices:", self.knee_joint_indices)
+        print("foot_joint_indices:", self.foot_joint_indices)
+        print("feet_names:", self.feet_names)
+        print("feet_indices:", self.feet_indices)  # FL, FR, BL, BR order
         
     def _reset_root_states(self, env_ids):
         """ Resets ROOT states position and velocities of selected environmments
@@ -49,6 +98,24 @@ class Y2Command(LeggedRobot):
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_states),
                                                      gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+
+    def _process_rigid_body_props(self, props, env_id):
+        if self.cfg.domain_rand.randomize_base_mass:
+            rng_mass = self.cfg.domain_rand.added_mass_range
+            rand_mass = np.random.uniform(rng_mass[0], rng_mass[1], size=(1, ))
+            props[0].mass += rand_mass
+        else:
+            rand_mass = np.zeros((1, ))
+
+        if self.cfg.domain_rand.randomize_base_com:
+            rng_com = self.cfg.domain_rand.added_com_range
+            rand_com = np.array([0.0, 0.0, np.random.uniform(rng_com[0], rng_com[1])])
+            props[0].com += gymapi.Vec3(*rand_com)
+        else:
+            rand_com = np.zeros(3)
+        mass_params = np.concatenate([rand_mass, rand_com])
+
+        return props, mass_params
     
     def check_termination(self):
         """ Check if environments need to be reset
@@ -57,6 +124,9 @@ class Y2Command(LeggedRobot):
         self.time_out_buf = self.episode_length_buf > self.max_episode_length  # no terminal reward for time-outs
         self.reset_buf |= self.time_out_buf
         self.reset_buf |= self._get_base_heights() < 0
+        # terminate if body is fully rolled over (side/upside down)
+        # projected_gravity z ~ -1 when upright, ~0 when on side, >0 when upside down
+        self.reset_buf |= self.projected_gravity[:, 2] > -0.2
 
     def step(self, actions):
         """ Apply actions, simulate, call self.post_physics_step()
@@ -81,7 +151,7 @@ class Y2Command(LeggedRobot):
             self.gym.simulate(self.sim)
             self.gym.fetch_results(self.sim, True)
             self.gym.refresh_dof_state_tensor(self.sim)
-            
+            self.dof_pos[:, self.foot_joint_indices]  = 0  # zero position of wheels
         self.post_physics_step()
 
         clip_obs = self.cfg.normalization.clip_observations
@@ -215,7 +285,7 @@ class Y2Command(LeggedRobot):
             self.obs_buf = torch.cat([self.obs_buf,pure_obs_hist,act_hist], dim=-1)
 
     def _compute_torques(self, actions):
-        self.dof_pos[:, self.foot_joint_indices]  = 0  # zero position of wheels
+        # self.dof_pos[:, self.foot_joint_indices]  = 0  # zero position of wheels
         """ Compute torques from actions.
             Actions can be interpreted as position or velocity targets given to a PD controller, or directly as scaled torques.
             [NOTE]: torques must have the same dimension as the number of DOFs, even if some DOFs are not actuated.
@@ -244,10 +314,10 @@ class Y2Command(LeggedRobot):
         if control_type == "P":
             if not self.cfg.domain_rand.randomize_kpkd:  # TODO add strength to gain directly
                 torques = self.p_gains*(joint_pos_target - self.dof_pos) - self.d_gains*self.dof_vel
-                # torques[:,self.foot_joint_indices] = self.p_gains[self.foot_joint_indices] * actions_scaled[:,self.foot_joint_indices] - self.d_gains[self.foot_joint_indices] * self.dof_vel[:,self.foot_joint_indices]                
+                torques[:,self.foot_joint_indices] = self.p_gains[self.foot_joint_indices] * actions_scaled[:,self.foot_joint_indices] - self.d_gains[self.foot_joint_indices] * self.dof_vel[:,self.foot_joint_indices]                
             else:
                 torques = self.kp_factor * self.p_gains*(joint_pos_target - self.dof_pos) - self.kd_factor * self.d_gains*self.dof_vel
-                # torques[:,self.foot_joint_indices] = self.kp_factor[:,self.foot_joint_indices]  * self.p_gains[self.foot_joint_indices] * actions_scaled[:,self.foot_joint_indices]- self.kd_factor[:,self.foot_joint_indices] *self.d_gains[self.foot_joint_indices] * self.dof_vel[:,self.foot_joint_indices]
+                torques[:,self.foot_joint_indices] = self.kp_factor[:,self.foot_joint_indices]  * self.p_gains[self.foot_joint_indices] * actions_scaled[:,self.foot_joint_indices]- self.kd_factor[:,self.foot_joint_indices] *self.d_gains[self.foot_joint_indices] * self.dof_vel[:,self.foot_joint_indices]
         else: 
             raise NameError(f"Unknown controller type: {control_type}")
         
@@ -265,9 +335,24 @@ class Y2Command(LeggedRobot):
         self.command_ranges["ang_vel_yaw"][0] = yaw_min * self._yaw_curriculum_scale
         self.command_ranges["ang_vel_yaw"][1] = yaw_max * self._yaw_curriculum_scale
 
+    def _init_heading_curriculum(self):
+        if hasattr(self, "_heading_curriculum_scale"):
+            return
+        head_min, head_max = self.command_ranges["heading"]
+        self._heading_curriculum_target = (float(head_min), float(head_max))
+        self._heading_curriculum_scale = 0.2
+        self._heading_curriculum_step = 0.1
+        self.command_ranges["heading"][0] = head_min * self._heading_curriculum_scale
+        self.command_ranges["heading"][1] = head_max * self._heading_curriculum_scale
+
     def _resample_commands(self, env_ids):
-        if self.cfg.commands.curriculum and not self.cfg.commands.heading_command:
-            self._init_yaw_curriculum()
+        yaw_curriculum = getattr(self.cfg.commands, "yaw_curriculum", True)
+        heading_curriculum = getattr(self.cfg.commands, "heading_curriculum", True)
+        if self.cfg.commands.curriculum:
+            if self.cfg.commands.heading_command and heading_curriculum:
+                self._init_heading_curriculum()
+            elif (not self.cfg.commands.heading_command) and yaw_curriculum:
+                self._init_yaw_curriculum()
 
         self.commands[env_ids, 0] = torch_rand_float(
             self.command_ranges["lin_vel_x"][0],self.command_ranges["lin_vel_x"][1],(len(env_ids), 1),device=self.device,).squeeze(1)
@@ -292,10 +377,24 @@ class Y2Command(LeggedRobot):
             # self.command_ranges["lin_vel_y"][0] = np.clip(self.command_ranges["lin_vel_y"][0] - 0.5, -self.cfg.commands.max_curriculum, 0.)
             # self.command_ranges["lin_vel_y"][1] = np.clip(self.command_ranges["lin_vel_y"][1] + 0.5, 0., self.cfg.commands.max_curriculum)
 
-        if not self.cfg.commands.heading_command:
-            if "tracking_ang_vel" in self.episode_sums and "tracking_ang_vel" in self.reward_scales:
-                mean_tracking = torch.mean(self.episode_sums["tracking_ang_vel"][env_ids]) / self.max_episode_length
-                if mean_tracking > 0.8 * self.reward_scales["tracking_ang_vel"]:
+        yaw_curriculum = getattr(self.cfg.commands, "yaw_curriculum", True)
+        heading_curriculum = getattr(self.cfg.commands, "heading_curriculum", True)
+        if "tracking_ang_vel" in self.episode_sums and "tracking_ang_vel" in self.reward_scales:
+            mean_tracking = torch.mean(self.episode_sums["tracking_ang_vel"][env_ids]) / self.max_episode_length
+            if mean_tracking > 0.8 * self.reward_scales["tracking_ang_vel"]:
+                if self.cfg.commands.heading_command and heading_curriculum:
+                    self._init_heading_curriculum()
+                    if self._heading_curriculum_scale < 1.0:
+                        self._heading_curriculum_scale = min(
+                            1.0, self._heading_curriculum_scale + self._heading_curriculum_step
+                        )
+                        self.command_ranges["heading"][0] = (
+                            self._heading_curriculum_target[0] * self._heading_curriculum_scale
+                        )
+                        self.command_ranges["heading"][1] = (
+                            self._heading_curriculum_target[1] * self._heading_curriculum_scale
+                        )
+                elif (not self.cfg.commands.heading_command) and yaw_curriculum:
                     self._init_yaw_curriculum()
                     if self._yaw_curriculum_scale < 1.0:
                         self._yaw_curriculum_scale = min(
@@ -307,6 +406,29 @@ class Y2Command(LeggedRobot):
                         self.command_ranges["ang_vel_yaw"][1] = (
                             self._yaw_curriculum_target[1] * self._yaw_curriculum_scale
                         )
+
+    def _post_physics_step_callback(self):
+        """ Callback called before computing terminations, rewards, and observations
+            Default behaviour: Compute ang vel command based on target and heading, compute measured terrain heights and randomly push robots
+        """
+        env_ids = (self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt)==0).nonzero(as_tuple=False).flatten()
+        self._resample_commands(env_ids)
+
+        if self.cfg.commands.heading_command:
+            forward = quat_apply(self.base_quat, self.forward_vec)
+            heading = torch.atan2(forward[:, 1], forward[:, 0])
+            self.commands[:, 2] = torch.clip(0.5*wrap_to_pi(self.commands[:, 3] - heading), -0.5, 0.5)
+
+        if self.cfg.terrain.measure_heights:
+            self.measured_heights = self._get_heights()
+            self.feet_heights = self._get_feet_heights()
+            self.feet_body_frame_height = self._get_feet_local_heights()
+            
+        if self.cfg.domain_rand.push_robots and  (self.common_step_counter % self.cfg.domain_rand.push_interval == 0):
+            self._push_robots()
+
+        if self.cfg.domain_rand.disturbance and (self.common_step_counter % self.cfg.domain_rand.disturbance_interval == 0):
+            self._disturbance_robots()
 
     def reset_idx(self, env_ids):
         """ Reset some environments.
@@ -362,8 +484,10 @@ class Y2Command(LeggedRobot):
             self.extras["episode"]["terrain_level"] = torch.mean(self.terrain_levels.float())
         if self.cfg.commands.curriculum:
             self.extras["episode"]["max_command_x"] = self.command_ranges["lin_vel_x"][1]
-            self.extras["episode"]["max_command_yaw"] = self.command_ranges["ang_vel_yaw"][1]
-            self.extras["episode"]["yaw_curriculum_scale"] = getattr(self, "_yaw_curriculum_scale", 1.0)
+            if self.cfg.commands.yaw_curriculum:
+                self.extras["episode"]["max_command_yaw"] = self.command_ranges["ang_vel_yaw"][1]
+            elif self.cfg.commands.heading_command:
+                self.extras["episode"]["max_command_heading"] = self.command_ranges["heading"][1]
         # send timeout info to the algorithm
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
@@ -390,7 +514,6 @@ class Y2Command(LeggedRobot):
             rew = self._reward_termination() * self.reward_scales["termination"]
             self.rew_buf += rew
             self.episode_sums["termination"] += rew
-
 
     # ------------ cost functions----------------
     def _cost_torque_limit(self):
@@ -493,10 +616,23 @@ class Y2Command(LeggedRobot):
     def _reward_feet_all_contact(self):
         contact = self.contact_forces[:, self.feet_indices, 2] > 1.
         return torch.clamp(-self.projected_gravity[:,2],0,1)*0.25 * torch.sum(contact, dim=1)
-
-    def _reward_stand_still(self):
-        cmd_small = (torch.norm(self.commands[:, :2], dim=1) < 0.1).float()
-        deviation = torch.mean(torch.abs(self.dof_pos - self.default_dof_pos), dim=1)
-        reward = torch.exp(-deviation)
-        return cmd_small * reward
     
+    def _reward_roll_turn_assist(self):
+        cmd_yaw = self.commands[:, 2]
+        # Use sin(roll) directly to avoid 2π jumps
+        roll_sin = torch.clamp(self.projected_gravity[:, 1], -1.0, 1.0)
+
+        k_roll = 0.5 # sin_max / cmd_yaw 也可
+        sin_max = float(np.sin(np.deg2rad(self.cfg.rewards.roll_max)))
+        cmd_x = self.commands[:, 0]
+        dir_sign = torch.sign(cmd_x)
+        dir_sign = torch.where(dir_sign == 0.0, torch.ones_like(dir_sign), dir_sign)
+        roll_sin_tgt = torch.clamp(k_roll * cmd_yaw * dir_sign, -sin_max, sin_max)
+
+        sigma = 0.12
+        r_roll = torch.exp(-((roll_sin - roll_sin_tgt) / sigma) ** 2)
+        gate = (torch.abs(cmd_yaw ) > 0.1 ).float()
+        return gate * r_roll
+
+    def _reward_action_smoothness(self):
+        return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.sum(torch.square(self.action_history_buf[:,-1,:] - 2*self.action_history_buf[:,-2,:]+self.action_history_buf[:,-3,:]), dim=1)

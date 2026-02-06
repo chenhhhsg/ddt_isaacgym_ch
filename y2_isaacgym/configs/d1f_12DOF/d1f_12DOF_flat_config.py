@@ -227,7 +227,7 @@ class D1F12DOFFlatCfgPPO( LeggedRobotCfgPPO ):
 
 class D1F12DOFFlat(D1F12DOF):
     def _reward_stand_still(self):
-        cmd_small = (torch.norm(self.commands[:, :2], dim=1) < 0.1).float()
+        cmd_small = (torch.norm(self.commands[:, :3], dim=1) < 0.1).float()
         deviation = torch.mean(torch.abs(self.dof_pos - self.default_dof_pos), dim=1)
         reward = torch.exp(-deviation)
         return cmd_small * reward

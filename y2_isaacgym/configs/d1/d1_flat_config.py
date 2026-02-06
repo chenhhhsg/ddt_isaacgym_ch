@@ -159,6 +159,7 @@ class D1Flat(LeggedRobot):
         # Penalize base height away from target
         base_height = self._get_base_heights()
         return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(base_height - self.cfg.rewards.base_height_target)
+        
     def _reward_torques(self):
         # Penalize torques
         return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.sum(torch.square(self.torques), dim=1)
@@ -241,7 +242,7 @@ class D1Flat(LeggedRobot):
     def _reward_feet_all_contact(self):
         contact = self.contact_forces[:, self.feet_indices, 2] < 1.
         return torch.clamp(-self.projected_gravity[:,2],0,1)*0.25 * torch.sum(contact, dim=1)
-    
+
     # ------------ cost functions----------------
     def _cost_torque_limit(self):
         # constaint torque over limit
@@ -352,6 +353,7 @@ class D1FlatCfg( LeggedRobotCfg ):
         self_collisions = 0 # 1 to disable, 0 to enable...bitwise filter
         replace_cylinder_with_capsule = False  # replace collision cylinders with capsules, leads to faster/more stable simulation
         flip_visual_attachments = False
+        wheel_radius = 0.086
   
     class rewards( LeggedRobotCfg.rewards ):
         class scales( LeggedRobotCfg.rewards.scales ):

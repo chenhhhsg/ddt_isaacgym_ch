@@ -1,4 +1,5 @@
 import numpy as np
+import os
 
 import torch
 import torch.nn as nn
@@ -663,9 +664,22 @@ class ActorCriticBarlowTwins(nn.Module):
         model_jit.save(path)
         obs_demo_input = torch.randn(1,self.num_prop-3).to(device)
         hist_demo_input = torch.randn(1,self.num_hist,self.num_prop-3).to(device)
+        base_name = os.path.splitext(os.path.basename(path))[0] or "policy"
+        out_dir = os.path.dirname(path) or "."
+        tag = getattr(self, "export_tag", None)
+        if not tag:
+            run_dir = getattr(self, "run_dir", None)
+            if run_dir:
+                tag = os.path.basename(run_dir.rstrip(os.sep))
+        if not tag:
+            parent = os.path.dirname(path)
+            if parent:
+                tag = os.path.basename(parent.rstrip(os.sep))
+        onnx_name = f"{base_name}_{tag}.onnx" if tag else f"{base_name}.onnx"
+        onnx_path = os.path.join(out_dir, onnx_name)
         torch_out = torch.onnx.export(self.actor_teacher_backbone,
                             (obs_demo_input,hist_demo_input),
-                            "policy.onnx",
+                            onnx_path,
                             input_names=["nn_input0", "nn_input1"],
                             output_names=["nn_output"],
                             verbose=False,

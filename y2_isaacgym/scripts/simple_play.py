@@ -76,7 +76,14 @@ def play(args):
     if args.checkpoint is not None:
       train_cfg.runner.checkpoint = args.checkpoint
     log_root = os.path.join(ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
-    resume_path = get_load_path(log_root, load_run=train_cfg.runner.load_run, checkpoint=train_cfg.runner.checkpoint)
+    resume_path = None
+    if isinstance(train_cfg.runner.checkpoint, str):
+        ckpt = train_cfg.runner.checkpoint
+        # allow direct relative/absolute path
+        if ckpt.endswith(".pt"):
+            resume_path = ckpt if os.path.isabs(ckpt) else os.path.join(ROOT_DIR, ckpt)
+    if resume_path is None:
+        resume_path = get_load_path(log_root, load_run=train_cfg.runner.load_run, checkpoint=train_cfg.runner.checkpoint)
 
     model_dict = torch.load(resume_path)
     print("resume_path", resume_path)

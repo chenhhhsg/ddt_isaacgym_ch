@@ -201,8 +201,8 @@
     <limit
       lower="-2.3562"
       upper="2.3562"
-      effort="80"
-      velocity="15" />
+      effort="24"
+      velocity="6" />
   </joint>
   <link
     name="front_left_knee_link">
@@ -248,7 +248,7 @@
     name="front_left_knee_joint"
     type="revolute">
     <origin
-      xyz="0.14 0 0"
+      xyz="0.18 0 0"
       rpy="0 0 -2.5197" />
     <parent
       link="front_left_thigh_link" />
@@ -259,8 +259,8 @@
     <limit
       lower="0"
       upper="1.9199"
-      effort="80"
-      velocity="15" />
+      effort="24"
+      velocity="6" />
   </joint>
   <link
     name="front_left_wheel_link">
@@ -306,7 +306,7 @@
     name="front_left_wheel_joint"
     type="revolute">
     <origin
-      xyz="0.14 0 0"
+      xyz="0.18 0 0"
       rpy="0 0 0.16348" />
     <parent
       link="front_left_knee_link" />
@@ -426,8 +426,8 @@
     <limit
       lower="-2.3562"
       upper="2.3562"
-      effort="80"
-      velocity="15" />
+      effort="24"
+      velocity="6" />
   </joint>
   <link
     name="front_right_knee_link">
@@ -473,7 +473,7 @@
     name="front_right_knee_joint"
     type="revolute">
     <origin
-      xyz="0.14 0 0"
+      xyz="0.18 0 0"
       rpy="0 0 -2.5197" />
     <parent
       link="front_right_thigh_link" />
@@ -484,8 +484,8 @@
     <limit
       lower="0"
       upper="1.9199"
-      effort="80"
-      velocity="15" />
+      effort="24"
+      velocity="6" />
   </joint>
   <link
     name="front_right_wheel_link">
@@ -531,7 +531,7 @@
     name="front_right_wheel_joint"
     type="revolute">
     <origin
-      xyz="0.14 0 0"
+      xyz="0.18 0 0"
       rpy="0 0 0.16348" />
     <parent
       link="front_right_knee_link" />
@@ -651,8 +651,8 @@
     <limit
       lower="-2.3562"
       upper="2.3562"
-      effort="80"
-      velocity="15" />
+      effort="24"
+      velocity="6" />
   </joint>
   <link
     name="back_left_knee_link">
@@ -698,7 +698,7 @@
     name="back_left_knee_joint"
     type="revolute">
     <origin
-      xyz="0.14 0 0"
+      xyz="0.18 0 0"
       rpy="0 0 2.5197" />
     <parent
       link="back_left_thigh_link" />
@@ -709,8 +709,8 @@
     <limit
       lower="-1.9199"
       upper="0"
-      effort="80"
-      velocity="15" />
+      effort="24"
+      velocity="6" />
   </joint>
   <link
     name="back_left_wheel_link">
@@ -756,7 +756,7 @@
     name="back_left_wheel_joint"
     type="revolute">
     <origin
-      xyz="0.14 0 0"
+      xyz="0.18 0 0"
       rpy="0 0 2.9781" />
     <parent
       link="back_left_knee_link" />
@@ -876,8 +876,8 @@
     <limit
       lower="-2.3562"
       upper="2.3562"
-      effort="80"
-      velocity="15" />
+      effort="24"
+      velocity="6" />
   </joint>
   <link
     name="back_right_knee_link">
@@ -923,7 +923,7 @@
     name="back_right_knee_joint"
     type="revolute">
     <origin
-      xyz="0.14 0 0"
+      xyz="0.18 0 0"
       rpy="0 0 2.5197" />
     <parent
       link="back_right_thigh_link" />
@@ -934,8 +934,8 @@
     <limit
       lower="-1.9199"
       upper="0"
-      effort="80"
-      velocity="15" />
+      effort="24"
+      velocity="6" />
   </joint>
   <link
     name="back_right_wheel_link">
@@ -981,7 +981,7 @@
     name="back_right_wheel_joint"
     type="revolute">
     <origin
-      xyz="0.14 0 0"
+      xyz="0.18 0 0"
       rpy="0 0 2.9781" />
     <parent
       link="back_right_knee_link" />
