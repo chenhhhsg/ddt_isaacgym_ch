@@ -151,7 +151,7 @@ class Y2Command(LeggedRobot):
             self.gym.simulate(self.sim)
             self.gym.fetch_results(self.sim, True)
             self.gym.refresh_dof_state_tensor(self.sim)
-            self.dof_pos[:, self.foot_joint_indices]  = 0  # zero position of wheels
+            # self.dof_pos[:, self.foot_joint_indices]  = 0  # zero position of wheels
         self.post_physics_step()
 
         clip_obs = self.cfg.normalization.clip_observations
@@ -285,7 +285,7 @@ class Y2Command(LeggedRobot):
             self.obs_buf = torch.cat([self.obs_buf,pure_obs_hist,act_hist], dim=-1)
 
     def _compute_torques(self, actions):
-        # self.dof_pos[:, self.foot_joint_indices]  = 0  # zero position of wheels
+        self.dof_pos[:, self.foot_joint_indices]  = 0  # zero position of wheels
         """ Compute torques from actions.
             Actions can be interpreted as position or velocity targets given to a PD controller, or directly as scaled torques.
             [NOTE]: torques must have the same dimension as the number of DOFs, even if some DOFs are not actuated.
@@ -314,7 +314,7 @@ class Y2Command(LeggedRobot):
         if control_type == "P":
             if not self.cfg.domain_rand.randomize_kpkd:  # TODO add strength to gain directly
                 torques = self.p_gains*(joint_pos_target - self.dof_pos) - self.d_gains*self.dof_vel
-                torques[:,self.foot_joint_indices] = self.p_gains[self.foot_joint_indices] * actions_scaled[:,self.foot_joint_indices] - self.d_gains[self.foot_joint_indices] * self.dof_vel[:,self.foot_joint_indices]                
+                # torques[:,self.foot_joint_indices] = self.p_gains[self.foot_joint_indices] * actions_scaled[:,self.foot_joint_indices] - self.d_gains[self.foot_joint_indices] * self.dof_vel[:,self.foot_joint_indices]                
             else:
                 torques = self.kp_factor * self.p_gains*(joint_pos_target - self.dof_pos) - self.kd_factor * self.d_gains*self.dof_vel
                 torques[:,self.foot_joint_indices] = self.kp_factor[:,self.foot_joint_indices]  * self.p_gains[self.foot_joint_indices] * actions_scaled[:,self.foot_joint_indices]- self.kd_factor[:,self.foot_joint_indices] *self.d_gains[self.foot_joint_indices] * self.dof_vel[:,self.foot_joint_indices]

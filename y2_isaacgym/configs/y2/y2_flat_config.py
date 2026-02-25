@@ -20,7 +20,7 @@ class Y2FlatCfg( LeggedRobotCfg ):
         num_observations = n_proprio + n_scan + history_len*n_proprio + n_priv_latent
         num_actions = 12  # fixed ABADOF joints
     class init_state( LeggedRobotCfg.init_state ):
-        pos = [0.0, 0.0, 0.4] # x,y,z [m]
+        pos = [0.0, 0.0, 0.35] # x,y,z [m]
         default_joint_angles = { # = target angles [rad] when action = 0.0
             'front_left_thigh_joint': -0.6,     # [rad]
             'front_right_thigh_joint': -0.6,     # [rad]
@@ -69,11 +69,11 @@ class Y2FlatCfg( LeggedRobotCfg ):
         class ranges:
             lin_vel_x = [-1.0, 1.0]   # m/s
             lin_vel_y = [0, 0]
-            ang_vel_yaw = [-0.3, 0.3] 
+            ang_vel_yaw = [-0.5, 0.5] 
             heading = [-1.57, 1.57]
  
     class asset( LeggedRobotCfg.asset ):
-        file = '{ROOT_DIR}/resources/y2/urdf/robot_collision.urdf'
+        file = '{ROOT_DIR}/resources/y2/urdf/robot.urdf'
         foot_name = "wheel"
         name = "Y2"
         penalize_contacts_on = ["thigh", "knee", "base"]
@@ -119,7 +119,7 @@ class Y2FlatCfg( LeggedRobotCfg ):
         base_height_target = 0.30  # y2的站立默认高度
         max_contact_force = 500.  # forces above this value are penalized
         roll_max = 15  # 转弯允许最大倾斜角
-        turn_assist_k = 3.50  # 使用左右轮中心距进行设计 
+        turn_assist_k = 0.9  # 使用左右轮中心距进行设计 
         turn_assist_sigma = 0.5
         inner_wheel_dist_target = 0.25
         inner_wheel_dist_min = 0.15
@@ -128,12 +128,12 @@ class Y2FlatCfg( LeggedRobotCfg ):
 
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = 0.0
-            powers = -1e-5 #-2e-5
-            action_smoothness = -0.000  #-0.01
+            powers = -2e-5 #-2e-5
+            action_smoothness = -0.001  #-0.01
             termination = 0.0
-            tracking_ang_vel = 8.0 # 下午调小一点试试  15->1
+            tracking_ang_vel = 15.0 # 
             lin_vel_z = -3.0
-            tracking_lin_vel_x = 10.0 # 相对应调小了 15->10
+            tracking_lin_vel_x = 15.0 # 
             tracking_lin_vel = 0.0
             orientation = -0.0         # 基础惩罚 (·Combined Roll + Pitch)
             orientation_pitch = -5.0   # 强力惩罚 Pitch
@@ -144,19 +144,19 @@ class Y2FlatCfg( LeggedRobotCfg ):
             dof_pos_limits = -10.0
             dof_vel = -0.0
             dof_acc = -2.5e-7
-            base_height = -50.0
+            base_height = -100.0
             collision = -1.0
 
             action_rate = -0.01
             stand_still = -0.0
             stand_still_vel = -20.0
-
-            feet_air_time = -2.0
+            
+            feet_air_time = -1.0
             upward = 0.5
-            feet_all_contact = -3.0  
-            inner_wheels_close = 3.0
-            roll_turn_assist = 3.0
-            turn_assist = 3.0
+            feet_all_contact = -5.0  
+            inner_wheels_close = 5.0
+            roll_turn_assist = 5.0
+            turn_assist = 5.0
             feet_pos_sym = 0.0
             pivot_turn = 0.0
 
@@ -283,13 +283,13 @@ class Y2Flat(Y2Command):
         # Use sin(roll) directly to avoid 2π jumps
         roll_sin = torch.clamp(self.projected_gravity[:, 1], -1.0, 1.0)
         # print("roll_sin:", roll_sin)
-        k_roll = 0.8 # sin_max / cmd_yaw 也可
+        k_roll = 0.9 # sin_max / cmd_yaw 也可
         sin_max = float(np.sin(np.deg2rad(self.cfg.rewards.roll_max)))
         cmd_x = self.commands[:, 0]
         dir_sign = torch.sign(cmd_x)
         dir_sign = torch.where(dir_sign == 0.0, torch.ones_like(dir_sign), dir_sign)
         roll_sin_tgt = torch.clamp(k_roll * cmd_yaw * dir_sign, -sin_max, sin_max)
-        sigma = 0.12
+        sigma = 0.20
         r_roll = torch.exp(-((roll_sin - roll_sin_tgt) / sigma) ** 2)
         gate = (torch.abs(cmd_yaw) > 0.1 ).float()
         return gate * r_roll
@@ -297,11 +297,13 @@ class Y2Flat(Y2Command):
     def _reward_turn_assist(self):
         cmd_yaw = self.commands[:, 2]
         gate = (torch.abs(cmd_yaw) > 0.1).float()
+
         w = self.dof_vel[:, self.foot_joint_indices]
+        v = w * self.cfg.asset.wheel_radius
         # print("dof_vel:", w)
-        w_left = 0.5 * (w[:, 0] + w[:, 2])
-        w_right = 0.5 * (w[:, 1] + w[:, 3])
-        diff = w_right - w_left
+        v_left = 0.5 * (v[:, 0] + v[:, 2])
+        v_right = 0.5 * (v[:, 1] + v[:, 3])
+        diff = v_right - v_left
         # print("机身速度",self.base_lin_vel[:,0])
         # print("左边轮速：",v_left,"右边轮速：",v_right)
         # print("右减左轮速差为:", diff)
@@ -310,11 +312,10 @@ class Y2Flat(Y2Command):
         return gate * reward
 
     def _reward_feet_all_contact(self):
-        # count how many feet are off ground
-        off_ground = (self.contact_forces[:, self.feet_indices, 2] < 1.0).float()
-        off_count = torch.sum(off_ground, dim=1)  # 0~4
-        # penalty proportional to how many are off
-        return off_count 
+        # penalize if any foot is off the ground
+        off_ground = self.contact_forces[:, self.feet_indices, 2] < 1.0
+        any_off = torch.sum(off_ground, dim=1).float()
+        return any_off
 
     def _reward_feet_air_time(self):
         """
@@ -323,7 +324,6 @@ class Y2Flat(Y2Command):
         """
         # contact_filt: [N,4] bool (already computed in post_physics_step) :contentReference[oaicite:4]{index=4}
         contact = self.contact_filt
-
         # integrate airtime
         self.feet_air_time += (~contact).float() * self.dt
         self.feet_air_time *= (~contact).float()  # reset to 0 when contact is True
@@ -362,23 +362,23 @@ class Y2Flat(Y2Command):
         penalty = torch.clamp(min_dist - inner_dist, min=0.0) / sigma
         return gate * (reward - too_close * penalty)
 
-    def _reward_pivot_turn(self):
-        # in-place turn: lift outer side legs, keep inner side in contact
-        cmd_x = self.commands[:, 0]
-        cmd_yaw = self.commands[:, 2]
-        gate = (torch.abs(cmd_yaw) > 0.1).float() * (torch.abs(cmd_x) < 0.1).float()
+    # def _reward_pivot_turn(self):
+    #     # in-place turn: lift outer side legs, keep inner side in contact
+    #     cmd_x = self.commands[:, 0]
+    #     cmd_yaw = self.commands[:, 2]
+    #     gate = (torch.abs(cmd_yaw) > 0.1).float() * (torch.abs(cmd_x) < 0.1).float()
 
-        contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
-        # feet order: FL, FR, BL, BR
-        # fixed diagonal support: keep FL + BR, lift FR + BL
-        fl = contact[:, 0].float()
-        fr = contact[:, 1].float()
-        bl = contact[:, 2].float()
-        br = contact[:, 3].float()
-        keep_on = fl * br
-        lift_off = (1.0 - fr) * (1.0 - bl)
-        reward = keep_on * lift_off
-        return gate * reward
+    #     contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
+    #     # feet order: FL, FR, BL, BR
+    #     # fixed diagonal support: keep FL + BR, lift FR + BL
+    #     fl = contact[:, 0].float()
+    #     fr = contact[:, 1].float()
+    #     bl = contact[:, 2].float()
+    #     br = contact[:, 3].float()
+    #     keep_on = fl * br
+    #     lift_off = (1.0 - fr) * (1.0 - bl)
+    #     reward = keep_on * lift_off
+    #     return gate * reward
 
     def _reward_feet_pos_sym(self):
         # feet positions in body frame
