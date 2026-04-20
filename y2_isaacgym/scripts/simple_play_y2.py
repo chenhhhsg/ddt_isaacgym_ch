@@ -111,7 +111,7 @@ def play(args):
     #                                                                               **policy_cfg_dict)
     # print(policy)
     # model_dict = torch.load(os.path.join(ROOT_DIR, 'logs/d1_flat/Nov12_18-27-36_/model_6000.pt'))
-    model_path = os.path.join(ROOT_DIR, 'logs/y2_flat/Feb06_15-17-05_/model_2000.pt')
+    model_path = os.path.join(ROOT_DIR, 'logs/y2_climb/Mar03_14-01-29_/model_6000.pt')
     model_dict = torch.load(model_path)
 
     policy.load_state_dict(model_dict['model_state_dict'])
