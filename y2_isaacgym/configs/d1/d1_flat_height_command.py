@@ -12,6 +12,16 @@ from utils.math import wrap_to_pi
 class D1Command(LeggedRobot):
     def _init_buffers(self):
         super()._init_buffers()
+        self.commands_scale = torch.tensor(
+            [
+                self.obs_scales.lin_vel,
+                self.obs_scales.lin_vel,
+                self.obs_scales.ang_vel,
+                1.0,
+            ],
+            device=self.device,
+            requires_grad=False,
+        )
         self.hip_joint_indices = [0, 4, 8, 12]
         self.foot_joint_indices = [3, 7, 11, 15]
                 # 假定 feet 顺序 FL, FR, RL, RR
@@ -136,7 +146,121 @@ class D1Command(LeggedRobot):
             raise NameError(f"Unknown controller type: {control_type}")
         torques *= self.motor_strength
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
-    
+
+    def compute_observations(self):
+        # 3 + 3 + 3 + 4 + 16 + 16+ 16 = 61
+        obs_buf =torch.cat((self.base_lin_vel * self.obs_scales.lin_vel,
+                            self.base_ang_vel  * self.obs_scales.ang_vel,
+                            self.projected_gravity,
+                            self.commands[:, [0, 1, 2, 4]] * self.commands_scale,
+                            (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
+                            self.dof_vel * self.obs_scales.dof_vel,
+                            self.action_history_buf[:,-1]),dim=-1)
+
+        noise_scales = self.cfg.noise.noise_scales
+        noise_level = self.cfg.noise.noise_level
+        noise_vec = torch.cat((torch.zeros(3),
+                               torch.ones(3) * noise_scales.ang_vel * noise_level,
+                               torch.ones(3) * noise_scales.gravity * noise_level,
+                               torch.zeros(4),
+                               torch.ones(
+                                   self.cfg.env.num_actions) * noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos,
+                               torch.ones(
+                                   self.cfg.env.num_actions) * noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel,
+                               torch.zeros(self.num_actions),
+                               ), dim=0)
+        
+        if self.cfg.noise.add_noise:
+            obs_buf += (2 * torch.rand_like(obs_buf) - 1) * noise_vec.to(self.device)
+
+        priv_latent = torch.cat(( # 私有潜在状态
+            # self.base_lin_vel * self.obs_scales.lin_vel,
+            # self.reindex_feet(self.contact_filt.float()-0.5),   # 足端接触状态（4足）           *4
+            self.contact_filt.float()-0.5,                      # 足端接触状态（4足）           *4
+            self.randomized_lag_tensor,                         # 动作延迟参数（模拟响应延迟）    *1
+            #self.base_ang_vel  * self.obs_scales.ang_vel,
+            # self.base_lin_vel * self.obs_scales.lin_vel,
+            self.mass_params_tensor,                            # 随机化的质量参数（躯干质量分布） *4
+            self.friction_coeffs_tensor,                        # 随机化的地面摩擦系数           *1    
+            self.restitution_coeffs_tensor,                     # 随机化的碰撞恢复系数           *1
+            self.motor_strength,                                # 电机强度比例因子               *16   
+            self.kp_factor,                                     # 位置环比例系数因子             *16
+            self.kd_factor), dim=-1)                            # 微分环系数因子                *16
+        
+        # add perceptive inputs if not blind
+        if self.cfg.terrain.measure_heights:
+            heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights, -1, 1.)*self.obs_scales.height_measurements
+            self.obs_buf = torch.cat([obs_buf, heights, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
+        else:
+            self.obs_buf = torch.cat([obs_buf, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
+
+        # update buffer
+        self.obs_history_buf = torch.where(
+            (self.episode_length_buf <= 1)[:, None, None], 
+            torch.stack([obs_buf] * self.cfg.env.history_len, dim=1),
+            torch.cat([
+                self.obs_history_buf[:, 1:],
+                obs_buf.unsqueeze(1)
+            ], dim=1)
+        )
+
+        self.contact_buf = torch.where(
+            (self.episode_length_buf <= 1)[:, None, None], 
+            torch.stack([self.contact_filt.float()] * self.cfg.env.contact_buf_len, dim=1),
+            torch.cat([
+                self.contact_buf[:, 1:],
+                self.contact_filt.float().unsqueeze(1)
+            ], dim=1)
+        )
+
+        if self.cfg.terrain.include_act_obs_pair_buf:
+            # add to full observation history and action history to obs
+            pure_obs_hist = self.obs_history_buf[:,:,:-self.num_actions].reshape(self.num_envs,-1)
+            act_hist = self.action_history_buf.view(self.num_envs,-1)
+            self.obs_buf = torch.cat([self.obs_buf,pure_obs_hist,act_hist], dim=-1)
+
+    def _post_physics_step_callback(self):
+        env_ids = (self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt) == 0).nonzero(as_tuple=False).flatten()
+        self._resample_commands(env_ids)
+
+        if self.cfg.commands.heading_command:
+            forward = quat_apply(self.base_quat, self.forward_vec)
+            heading = torch.atan2(forward[:, 1], forward[:, 0])
+            self.commands[:, 2] = torch.clip(0.5 * wrap_to_pi(self.commands[:, 3] - heading), -1., 1.)
+
+        if self.cfg.terrain.measure_heights:
+            self.measured_heights = self._get_heights()
+            self.feet_heights = self._get_feet_heights()
+            self.feet_body_frame_height = self._get_feet_local_heights()
+
+        if self.cfg.domain_rand.push_robots and (self.common_step_counter % self.cfg.domain_rand.push_interval == 0):
+            self._push_robots()
+
+        if self.cfg.domain_rand.disturbance and (self.common_step_counter % self.cfg.domain_rand.disturbance_interval == 0):
+            self._disturbance_robots()
+
+
+    def _resample_commands(self, env_ids):  # 需要加入高度的
+        """ Randommly select commands of some environments
+
+        Args:
+            env_ids (List[int]): Environments ids for which new commands are needed
+        """
+        if len(env_ids) == 0:
+            return
+
+        self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 4] = torch_rand_float(self.command_ranges["base_height"][0], self.command_ranges["base_height"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        if self.cfg.commands.heading_command:
+            self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        else:
+            self.commands[env_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+
+        # set small commands to zero
+        self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+
+
     #------------ reward functions----------------
     def _reward_lin_vel_z(self):
         # Penalize z axis base linear velocity
@@ -159,9 +283,9 @@ class D1Command(LeggedRobot):
         return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(self.projected_gravity[:, 1])
 
     def _reward_base_height(self):
-        # Penalize base height away from target
+        # Track the commanded base height directly.
         base_height = self._get_base_heights()
-        return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(base_height - self.cfg.rewards.base_height_target)
+        return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(base_height - self.commands[:, 4])
         
     def _reward_torques(self):
         # Penalize torques
