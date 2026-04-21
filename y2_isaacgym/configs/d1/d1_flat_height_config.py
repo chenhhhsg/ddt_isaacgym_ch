@@ -124,7 +124,7 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         soft_dof_vel_limit = 0.9
         soft_torque_limit = 0.9
         max_contact_force = 500.  # forces above this value are penalized
-
+        tracking_height_sigma = 0.10
 
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = 0.0
@@ -140,7 +140,7 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             dof_pos_limits = -10.0
             dof_vel = 0.0
             dof_acc = -2.5e-7
-            base_height = -5.0
+            base_height = -0.0
             feet_air_time = 0.0
             collision = -1.0
             feet_stumble = 0.0
@@ -153,6 +153,7 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             # feet_contact_forces = -0.1
             # joint_power=-2e-5
             # powers_dist =-1.0e-5
+            tracking_base_height = 3.0
         
 
     class costs(LeggedRobotCfg.costs):
@@ -236,13 +237,8 @@ class D1FlatHeightCfgPPO( LeggedRobotCfgPPO ):
 class D1FlatHeight(D1Command):
 
     ## 使用stand_still_vel + base_height 设置默认高度 or stand_still 设置
-    def _reward_stand_still_vel(self):
-        # 现在使用的是奖励
-        gate = (torch.norm(self.commands[:, :3], dim=1) < 0.1).float()
-        base_lin_speed = torch.norm(self.base_lin_vel, dim=1)
-        base_ang_speed = torch.norm(self.base_ang_vel, dim=1)
-        leg_speed = torch.mean(torch.abs(self.dof_vel), dim=1)
-        deviation = base_lin_speed + base_ang_speed + leg_speed
-        reward = torch.clamp(torch.square(-deviation), -2, 2)
-        # reward = torch.exp(-deviation)
-        return gate * reward
+
+    def _reward_tracking_base_height(self):
+        base_height = self._get_base_heights()
+        height_error = base_height - self.commands[:,4]
+        return torch.exp(-(height_error ** 2) / self.cfg.rewards.tracking_height_sigma)

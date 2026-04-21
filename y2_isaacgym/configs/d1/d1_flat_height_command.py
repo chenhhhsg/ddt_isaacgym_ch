@@ -54,8 +54,9 @@ class D1Command(LeggedRobot):
             self.root_states[env_ids] = self.base_init_state
             self.root_states[env_ids, :3] += self.env_origins[env_ids]
         # base rotation
-        random_roll = torch_rand_float(-np.pi, np.pi, (len(env_ids),1), device=self.device).squeeze(1)
-        random_pitch = torch_rand_float(-np.pi, np.pi, (len(env_ids),1), device=self.device).squeeze(1)
+        # Keep reset attitude close to upright so the policy can focus on height tracking first.
+        random_roll = torch_rand_float(-0.15, 0.15, (len(env_ids),1), device=self.device).squeeze(1)
+        random_pitch = torch_rand_float(-0.15, 0.15, (len(env_ids),1), device=self.device).squeeze(1)
         random_yaw = torch_rand_float(-np.pi, np.pi, (len(env_ids),1), device=self.device).squeeze(1)
         self.root_states[env_ids, 3:7] = quat_from_euler_xyz(random_roll, random_pitch, random_yaw)
         # base velocities
