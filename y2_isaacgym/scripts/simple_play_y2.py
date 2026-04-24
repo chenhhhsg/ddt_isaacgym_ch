@@ -169,23 +169,22 @@ def play(args):
     command_x = 0.0
     command_y = 0.0
     command_yaw = 0.0
-    has_z_vel_command = env.commands.shape[1] >= 5
-    if has_z_vel_command and hasattr(env_cfg.commands.ranges, "lin_vel_z"):
-        z_vel_min, z_vel_max = env_cfg.commands.ranges.lin_vel_z
-        command_z = 0.5 * (z_vel_min + z_vel_max)
-        print(f"z velocity command enabled: range=({z_vel_min:.3f}, {z_vel_max:.3f}), init={command_z:.3f}")
+    has_height_command = env.commands.shape[1] >= 5
+    if has_height_command and hasattr(env_cfg.commands.ranges, "base_height"):
+        height_min, height_max = env_cfg.commands.ranges.base_height
+        command_height = 0.5 * (height_min + height_max)
+        print(f"height command enabled: range=({height_min:.3f}, {height_max:.3f}), init={command_height:.3f}")
     else:
-        z_vel_min = None
-        z_vel_max = None
-        command_z = None
-        print("z velocity command disabled for this task")
+        height_min = None
+        height_max = None
+        command_height = None
+        print("height command disabled for this task")
     
     # 命令速度和加速度限制
     max_x_vel = 1.5
     max_y_vel = 1.0
     # heading_command = 0.5
     max_yaw_vel = 1.0
-    max_z_vel = 0.5
 
     # 按键状态跟踪字典（用于持续检测按键）
     key_states = {
@@ -258,22 +257,22 @@ def play(args):
             else:
                 command_y = 0.0
 
-            # ↑/↓ 控制 z 方向（上升/下降）
-            if has_z_vel_command:
+            # ↑/↓ 控制机身高度
+            if has_height_command:
                 if key_states["up"]:
-                    command_z = min(max_z_vel, z_vel_max)
+                    command_height = height_max
                 elif key_states["down"]:
-                    command_z = max(-max_z_vel, z_vel_min)
+                    command_height = height_min
                 else:
-                    command_z = 0.0
+                    command_height = 0.5 * (height_min + height_max)
 
         # 设置命令值
         env.commands[:,0] = command_x  # x方向速度
         env.commands[:,1] = command_y  # y方向速度
         env.commands[:,2] = command_yaw #command_yaw # yaw角速度
         env.commands[:,3] = 0
-        if has_z_vel_command:
-            env.commands[:,4] = command_z
+        if has_height_command:
+            env.commands[:,4] = command_height
         # print("env.commands:",env.commands)
 
         # if i % 100 == 0:
@@ -341,7 +340,7 @@ def play(args):
                         'contact_forces_z': env.contact_forces[robot_index, env.feet_indices, 2].cpu().numpy(),
                         'robot_mass': robot_mass,
                         'base_height': env._get_base_heights()[robot_index].item(),
-                        'command_z': env.commands[robot_index, 4].item() if has_z_vel_command else 0.0,
+                        'command_height': env.commands[robot_index, 4].item() if has_height_command else 0.0,
                         'torques': env.torques[robot_index, :].tolist(),
                         'velocities': env.dof_vel[robot_index, :].tolist(),
                         'wheel_left_vel': left_wheel_lin,

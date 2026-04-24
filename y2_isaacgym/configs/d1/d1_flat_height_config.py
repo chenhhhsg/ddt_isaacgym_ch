@@ -62,13 +62,10 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         hip_scale_reduction = 0.5
         use_filter = True
 
-    class commands( LeggedRobotCfg.control ):
-        curriculum = True 
+    class commands( LeggedRobotCfg.commands ):
+        curriculum = False
         # yaw_curriculum = False
         # heading_curriculum = False
-        max_curriculum = 1.5
-        max_curriculum_vel_z = 0.5
-        num_commands = 5  # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading, lin_vel_z
         max_curriculum = 1.5
         num_commands = 5  # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading, base_height
         resampling_time = 10.  # time before command are changed[s]
@@ -80,7 +77,7 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             lin_vel_y = [-0.5, 0.5]  # min max [m/s]
             ang_vel_yaw = [-1, 1]  # min max [rad/s]
             heading = [-3.14, 3.14]
-            lin_vel_z = [0.25, 0.5]  # min max m
+            base_height = [0.25, 0.50]  # min max [m]
  
     class asset( LeggedRobotCfg.asset ):
         file = '{ROOT_DIR}/resources/d1/urdf/robot.urdf'
@@ -135,7 +132,6 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             termination = 0.0
             tracking_lin_vel = 2.0
             tracking_ang_vel = 1.0
-            lin_vel_z = 0.0
             orientation = -1.0
             orientation_y = -5.0
             ang_vel_xy = -0.05
@@ -156,7 +152,7 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             # feet_contact_forces = -0.1
             # joint_power=-2e-5
             # powers_dist =-1.0e-5
-            tracking_lin_vel_z = 2.0
+            tracking_base_height = 2.0
             stand_still = -0.5
         
 
