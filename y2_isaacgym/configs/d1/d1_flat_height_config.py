@@ -69,6 +69,8 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         max_curriculum = 1.5
         max_curriculum_vel_z = 0.5
         num_commands = 5  # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading, lin_vel_z
+        max_curriculum = 1.5
+        num_commands = 5  # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading, base_height
         resampling_time = 10.  # time before command are changed[s]
         heading_command = True  # if true: compute ang vel command from heading error
         global_reference = False
@@ -78,7 +80,7 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             lin_vel_y = [-0.5, 0.5]  # min max [m/s]
             ang_vel_yaw = [-1, 1]  # min max [rad/s]
             heading = [-3.14, 3.14]
-            lin_vel_z = [-0.1, 0.1]  # min max [m/s]
+            lin_vel_z = [0.25, 0.5]  # min max m
  
     class asset( LeggedRobotCfg.asset ):
         file = '{ROOT_DIR}/resources/d1/urdf/robot.urdf'
@@ -125,7 +127,7 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         soft_dof_vel_limit = 0.9
         soft_torque_limit = 0.9
         max_contact_force = 500.  # forces above this value are penalized
-        tracking_lin_vel_z_sigma = 0.10
+        tracking_height_sigma = 0.05
 
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = 0.0
@@ -238,13 +240,17 @@ class D1FlatHeightCfgPPO( LeggedRobotCfgPPO ):
 
 class D1FlatHeight(D1Command):
 
-    def _reward_tracking_lin_vel_z(self):
-        z_vel_error = torch.square(self.commands[:, 4] - self.base_lin_vel[:, 2])
-        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp(
-            -z_vel_error / self.cfg.rewards.tracking_lin_vel_z_sigma)
+    ## 使用stand_still_vel + base_height 设置默认高度 or stand_still 设置
 
-    def _reward_stand_still(self): 
-        # Penalize wheel_vel at zero commands
-        cmd_gate = (torch.norm(self.commands[:, [0, 1, 4]], dim=1) < 0.1).float()
-        wheel_vel_error = torch.norm(self.dof_vel[:, self.foot_joint_indices], dim=1)
-        return cmd_gate * wheel_vel_error
+    def _reward_tracking_base_height(self):
+        base_height = self._get_base_heights()
+        height_error = base_height - self.commands[:,4]
+
+        return torch.exp(-(height_error ** 2) / self.cfg.rewards.tracking_height_sigma)
+
+    def _reward_stand_still(self):
+        # 惩罚无命令下滑动
+        cmd_still = ((torch.norm(self.commands[:, :2], dim=1) < 0.1)).float()
+        base_motion = (torch.sum(torch.square(self.base_lin_vel), dim=1))
+
+        return cmd_still * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * base_motion
