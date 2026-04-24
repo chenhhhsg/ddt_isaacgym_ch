@@ -105,6 +105,7 @@ class Logger:
         # plot base vel z
         a = axs[1, 2]
         if log["base_vel_z"]: a.plot(time, log["base_vel_z"], label='measured')
+        if log["command_z"]: a.plot(time, log["command_z"], label='commanded')
         a.set(xlabel='time [s]', ylabel='base lin vel [m/s]', title='Base velocity z')
         a.legend()
         # plot robot mass (fallback to contact forces if mass not logged)
@@ -132,17 +133,45 @@ class Logger:
         # a.legend()
         # plot torques for each joint
 
-        # base height
+        # plot base height/target and tracking error on dual y-axes
         a = axs[2, 2]
-        if log["base_height"] : a.plot(time, log["base_height"], label='measured')
-        if log["command_height"]: a.plot(time, log["command_height"], label='target')
+        a_err = a.twinx()
+        base_height = np.array(log["base_height"], dtype=float) if log["base_height"] else np.array([])
+        command_height = np.array(log["command_height"], dtype=float) if log["command_height"] else np.array([])
+        lines = []
+        labels = []
+        if base_height.size:
+            line = a.plot(time[:base_height.size], base_height, color='C0', label='measured')[0]
+            lines.append(line)
+            labels.append(line.get_label())
+        if command_height.size:
+            line = a.plot(time[:command_height.size], command_height, color='C1', label='target')[0]
+            lines.append(line)
+            labels.append(line.get_label())
+        if base_height.size and command_height.size:
+            height_len = min(base_height.size, command_height.size, time.size)
+            height_error = base_height[:height_len] - command_height[:height_len]
+            line = a_err.plot(
+                time[:height_len],
+                height_error,
+                color='C3',
+                linestyle='--',
+                linewidth=1.5,
+                label='error (measured-target)',
+            )[0]
+            a_err.axhline(0.0, color='C3', linestyle=':', linewidth=1.0)
+            lines.append(line)
+            labels.append(line.get_label())
         a.set(xlabel='time [s]', ylabel='base height [m]', title='Base height')
-        a.legend()
+        a_err.set(ylabel='height error [m]')
+        if lines:
+            a.legend(lines, labels, loc='best')
 
         # per-joint torque/speed over time
         fig2 = None
         fig3 = None
         fig4 = None
+        fig5 = None
         if log["torques"]:
             num_joints = len(log["torques"][0])
             rows, cols = 3, 4
@@ -247,6 +276,39 @@ class Logger:
             a.set(xlabel='time [s]', ylabel='diff [rad/s]', title='Wheel speed difference')
             a.legend()
             fig4.tight_layout()
+
+        if base_height.size or command_height.size:
+            fig5, ax5 = plt.subplots(1, 1, figsize=(10, 5))
+            ax5_err = ax5.twinx()
+            lines5 = []
+            labels5 = []
+            if base_height.size:
+                line = ax5.plot(time[:base_height.size], base_height, color='C0', label='measured')[0]
+                lines5.append(line)
+                labels5.append(line.get_label())
+            if command_height.size:
+                line = ax5.plot(time[:command_height.size], command_height, color='C1', label='target')[0]
+                lines5.append(line)
+                labels5.append(line.get_label())
+            if base_height.size and command_height.size:
+                height_len = min(base_height.size, command_height.size, time.size)
+                height_error = base_height[:height_len] - command_height[:height_len]
+                line = ax5_err.plot(
+                    time[:height_len],
+                    height_error,
+                    color='C3',
+                    linestyle='--',
+                    linewidth=1.5,
+                    label='error (measured-target)',
+                )[0]
+                ax5_err.axhline(0.0, color='C3', linestyle=':', linewidth=1.0)
+                lines5.append(line)
+                labels5.append(line.get_label())
+            ax5.set(xlabel='time [s]', ylabel='base height [m]', title='Base height tracking')
+            ax5_err.set(ylabel='height error [m]')
+            if lines5:
+                ax5.legend(lines5, labels5, loc='best')
+            fig5.tight_layout()
         if save_path:
             fig.savefig(save_path, dpi=150)
             if fig2 is not None:
@@ -258,6 +320,9 @@ class Logger:
             if fig4 is not None:
                 base, ext = os.path.splitext(save_path)
                 fig4.savefig(f"{base}_wheel_speeds{ext}", dpi=150)
+            if fig5 is not None:
+                base, ext = os.path.splitext(save_path)
+                fig5.savefig(f"{base}_base_height{ext}", dpi=150)
             print(f"Saved plot to {save_path}")
             return
         plt.show()

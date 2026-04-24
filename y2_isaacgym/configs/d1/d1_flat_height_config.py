@@ -66,18 +66,19 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         curriculum = True 
         # yaw_curriculum = False
         # heading_curriculum = False
-        max_curriculum = 3.0
-        num_commands = 5  # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading, base_height
+        max_curriculum = 1.5
+        max_curriculum_vel_z = 0.5
+        num_commands = 5  # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading, lin_vel_z
         resampling_time = 10.  # time before command are changed[s]
         heading_command = True  # if true: compute ang vel command from heading error
         global_reference = False
 
         class ranges:
             lin_vel_x = [-0.5, 0.5]  # min max [m/s]
-            lin_vel_y = [-1.0, 1.0]  # min max [m/s]
+            lin_vel_y = [-0.5, 0.5]  # min max [m/s]
             ang_vel_yaw = [-1, 1]  # min max [rad/s]
             heading = [-3.14, 3.14]
-            base_height = [0.25, 0.50]  # min max [m]
+            lin_vel_z = [-0.1, 0.1]  # min max [m/s]
  
     class asset( LeggedRobotCfg.asset ):
         file = '{ROOT_DIR}/resources/d1/urdf/robot.urdf'
@@ -96,9 +97,9 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         randomize_restitution = True
         restitution_range = [0.0,1.0]
         randomize_base_mass = True
-        added_mass_range = [-1.0, 3.0]  # y2有负载10kg的需求，随机化加入8~15kg质量
+        added_mass_range = [-1.0, 3.0]  # 
         randomize_base_com = True
-        added_com_range = [-0.1, 0.1]  # 重心往上偏移0~5cm
+        added_com_range = [-0.1, 0.1]  # 
         push_robots = True
         push_interval_s = 15
         max_push_vel_xy = 1
@@ -124,7 +125,7 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         soft_dof_vel_limit = 0.9
         soft_torque_limit = 0.9
         max_contact_force = 500.  # forces above this value are penalized
-        tracking_height_sigma = 0.10
+        tracking_lin_vel_z_sigma = 0.10
 
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = 0.0
@@ -132,15 +133,15 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             termination = 0.0
             tracking_lin_vel = 2.0
             tracking_ang_vel = 1.0
-            lin_vel_z = -2.0
+            lin_vel_z = 0.0
             orientation = -1.0
-            orientation_y = -10.0
+            orientation_y = -5.0
             ang_vel_xy = -0.05
             # ang_vel_y = -1.0 # avoid flipping
             dof_pos_limits = -10.0
             dof_vel = 0.0
             dof_acc = -2.5e-7
-            base_height = -0.0
+            # base_height = -0.0
             feet_air_time = 0.0
             collision = -1.0
             feet_stumble = 0.0
@@ -153,7 +154,8 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             # feet_contact_forces = -0.1
             # joint_power=-2e-5
             # powers_dist =-1.0e-5
-            tracking_base_height = 3.0
+            tracking_lin_vel_z = 2.0
+            stand_still = -0.5
         
 
     class costs(LeggedRobotCfg.costs):
@@ -226,8 +228,8 @@ class D1FlatHeightCfgPPO( LeggedRobotCfgPPO ):
         # policy_class_name = 'ActorCriticTransBarlowTwins'
         runner_class_name = 'OnConstraintPolicyRunner'
         algorithm_class_name = 'NP3O'
-        save_interval = 3000
-        max_iterations = 6000
+        save_interval = 5000
+        max_iterations = 10000
         num_steps_per_env = 24
         # load_run = -1
         # checkpoint = "logs/d1_flat_height/model_3000.pt"
@@ -236,9 +238,13 @@ class D1FlatHeightCfgPPO( LeggedRobotCfgPPO ):
 
 class D1FlatHeight(D1Command):
 
-    ## 使用stand_still_vel + base_height 设置默认高度 or stand_still 设置
+    def _reward_tracking_lin_vel_z(self):
+        z_vel_error = torch.square(self.commands[:, 4] - self.base_lin_vel[:, 2])
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp(
+            -z_vel_error / self.cfg.rewards.tracking_lin_vel_z_sigma)
 
-    def _reward_tracking_base_height(self):
-        base_height = self._get_base_heights()
-        height_error = base_height - self.commands[:,4]
-        return torch.exp(-(height_error ** 2) / self.cfg.rewards.tracking_height_sigma)
+    def _reward_stand_still(self): 
+        # Penalize wheel_vel at zero commands
+        cmd_gate = (torch.norm(self.commands[:, [0, 1, 4]], dim=1) < 0.1).float()
+        wheel_vel_error = torch.norm(self.dof_vel[:, self.foot_joint_indices], dim=1)
+        return cmd_gate * wheel_vel_error

@@ -111,7 +111,7 @@ def play(args):
     #                                                                               **policy_cfg_dict)
     # print(policy)
     # model_dict = torch.load(os.path.join(ROOT_DIR, 'logs/d1_flat/Nov12_18-27-36_/model_6000.pt'))
-    model_path = os.path.join(ROOT_DIR, 'logs/d1_flat_height/Apr21_10-31-46_/model_6000.pt')
+    model_path = os.path.join(ROOT_DIR, 'logs/d1_flat_height/Apr23_12-47-43_/model_6000.pt')
     model_dict = torch.load(model_path)
 
     policy.load_state_dict(model_dict['model_state_dict'])
@@ -169,30 +169,28 @@ def play(args):
     command_x = 0.0
     command_y = 0.0
     command_yaw = 0.0
-    has_height_command = env.commands.shape[1] >= 5
-    if has_height_command and hasattr(env_cfg.commands.ranges, "base_height"):
-        height_min, height_max = env_cfg.commands.ranges.base_height
-        command_height = 0.5 * (height_min + height_max)
-        height_step = 0.01
-        print(f"height command enabled: range=({height_min:.3f}, {height_max:.3f}), init={command_height:.3f}, step={height_step:.3f}")
+    has_z_vel_command = env.commands.shape[1] >= 5
+    if has_z_vel_command and hasattr(env_cfg.commands.ranges, "lin_vel_z"):
+        z_vel_min, z_vel_max = env_cfg.commands.ranges.lin_vel_z
+        command_z = 0.5 * (z_vel_min + z_vel_max)
+        print(f"z velocity command enabled: range=({z_vel_min:.3f}, {z_vel_max:.3f}), init={command_z:.3f}")
     else:
-        height_min = None
-        height_max = None
-        command_height = None
-        height_step = 0.0
-        print("height command disabled for this task")
+        z_vel_min = None
+        z_vel_max = None
+        command_z = None
+        print("z velocity command disabled for this task")
     
     # 命令速度和加速度限制
     max_x_vel = 1.5
     max_y_vel = 1.0
     # heading_command = 0.5
     max_yaw_vel = 1.0
-    height_debug_interval = max(1, int(0.2 / env.dt))
+    max_z_vel = 0.5
 
     # 按键状态跟踪字典（用于持续检测按键）
     key_states = {
         "w": False, "s": False, "a": False, "d": False,
-        "left": False, "right": False,
+        "left": False, "right": False, "up": False, "down": False,
     }
 
     # 订阅键盘事件（如果环境有viewer）
@@ -230,12 +228,10 @@ def play(args):
                     key_states["left"] = (evt.value > 0)
                 elif evt.action == "right_pressed":
                     key_states["right"] = (evt.value > 0)
-                elif evt.action == "up_pressed" and has_height_command and evt.value > 0:
-                    command_height = min(command_height + height_step, height_max)
-                    print(f"command_height -> {command_height:.3f}")
-                elif evt.action == "down_pressed" and has_height_command and evt.value > 0:
-                    command_height = max(command_height - height_step, height_min)
-                    print(f"command_height -> {command_height:.3f}")
+                elif evt.action == "up_pressed":
+                    key_states["up"] = (evt.value > 0)
+                elif evt.action == "down_pressed":
+                    key_states["down"] = (evt.value > 0)
             
             # 根据按键状态设置命令值
             # W/S 控制 x 方向（前进/后退）
@@ -262,13 +258,22 @@ def play(args):
             else:
                 command_y = 0.0
 
+            # ↑/↓ 控制 z 方向（上升/下降）
+            if has_z_vel_command:
+                if key_states["up"]:
+                    command_z = min(max_z_vel, z_vel_max)
+                elif key_states["down"]:
+                    command_z = max(-max_z_vel, z_vel_min)
+                else:
+                    command_z = 0.0
+
         # 设置命令值
         env.commands[:,0] = command_x  # x方向速度
         env.commands[:,1] = command_y  # y方向速度
         env.commands[:,2] = command_yaw #command_yaw # yaw角速度
         env.commands[:,3] = 0
-        if has_height_command:
-            env.commands[:,4] = command_height
+        if has_z_vel_command:
+            env.commands[:,4] = command_z
         # print("env.commands:",env.commands)
 
         # if i % 100 == 0:
@@ -336,7 +341,7 @@ def play(args):
                         'contact_forces_z': env.contact_forces[robot_index, env.feet_indices, 2].cpu().numpy(),
                         'robot_mass': robot_mass,
                         'base_height': env._get_base_heights()[robot_index].item(),
-                        'command_height': env.commands[robot_index, 4].item() if has_height_command else 0.0,
+                        'command_z': env.commands[robot_index, 4].item() if has_z_vel_command else 0.0,
                         'torques': env.torques[robot_index, :].tolist(),
                         'velocities': env.dof_vel[robot_index, :].tolist(),
                         'wheel_left_vel': left_wheel_lin,
@@ -357,6 +362,6 @@ def play(args):
 
 if __name__ == '__main__':
     RECORD_FRAMES = False
-    PLOT_STATES = False
+    PLOT_STATES = True
     args = get_args()
     play(args)

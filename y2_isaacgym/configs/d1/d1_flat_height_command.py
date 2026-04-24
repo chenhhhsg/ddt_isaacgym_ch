@@ -17,7 +17,7 @@ class D1Command(LeggedRobot):
                 self.obs_scales.lin_vel,
                 self.obs_scales.lin_vel,
                 self.obs_scales.ang_vel,
-                1.0,
+                self.obs_scales.lin_vel,
             ],
             device=self.device,
             requires_grad=False,
@@ -35,7 +35,7 @@ class D1Command(LeggedRobot):
         left_span  = torch.abs(vec_l_body[:, 0]).mean()
         right_span = torch.abs(vec_r_body[:, 0]).mean()
         print(f"body-frame span x: left={left_span.item():.3f}m right={right_span.item():.3f}m")
-        
+
     def _reset_root_states(self, env_ids):
         """ Resets ROOT states position and velocities of selected environmments
             Sets base position based on the curriculum
@@ -241,7 +241,7 @@ class D1Command(LeggedRobot):
             self._disturbance_robots()
 
 
-    def _resample_commands(self, env_ids):  # 需要加入高度的
+    def _resample_commands(self, env_ids):  # 需要加入 z 方向速度命令
         """ Randommly select commands of some environments
 
         Args:
@@ -252,7 +252,7 @@ class D1Command(LeggedRobot):
 
         self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 4] = torch_rand_float(self.command_ranges["base_height"][0], self.command_ranges["base_height"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 4] = torch_rand_float(self.command_ranges["lin_vel_z"][0], self.command_ranges["lin_vel_z"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         if self.cfg.commands.heading_command:
             self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         else:
@@ -261,11 +261,49 @@ class D1Command(LeggedRobot):
         # set small commands to zero
         self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
 
+    def _update_terrain_curriculum(self, env_ids):
+        """ Implements the game-inspired curriculum.
+
+        Args:
+            env_ids (List[int]): ids of environments being reset
+        """
+        # Implement Terrain curriculum
+        if not self.init_done:
+            # don't change on initial reset
+            return
+        distance = torch.norm(self.root_states[env_ids, :2] - self.env_origins[env_ids, :2], dim=1)
+        # robots that walked far enough progress to harder terains
+        move_up = distance > self.terrain.env_length / 2
+        # robots that walked less than half of their required distance go to simpler terrains
+        move_down = (distance < torch.norm(self.commands[env_ids, :2], dim=1)*self.max_episode_length_s*0.5) * ~move_up
+        self.terrain_levels[env_ids] += 1 * move_up - 1 * move_down
+        # Robots that solve the last level are sent to a random one
+        self.terrain_levels[env_ids] = torch.where(self.terrain_levels[env_ids]>=self.max_terrain_level,
+                                                   torch.randint_like(self.terrain_levels[env_ids], self.max_terrain_level),
+                                                   torch.clip(self.terrain_levels[env_ids], 0)) # (the minumum level is zero)
+        self.env_origins[env_ids] = self.terrain_origins[self.terrain_levels[env_ids], self.terrain_types[env_ids]]
+    
+    def _update_command_curriculum(self, env_ids):
+        """ Implements a curriculum of increasing commands
+
+        Args:
+            env_ids (List[int]): ids of environments being reset
+        """
+        # If the tracking reward is above 80% of the maximum, increase the range of commands
+        if torch.mean(self.episode_sums["tracking_lin_vel"][env_ids]) / self.max_episode_length > 0.8 * self.reward_scales["tracking_lin_vel"]:
+            self.command_ranges["lin_vel_x"][0] = np.clip(self.command_ranges["lin_vel_x"][0] - 0.5, -self.cfg.commands.max_curriculum, 0.)
+            self.command_ranges["lin_vel_x"][1] = np.clip(self.command_ranges["lin_vel_x"][1] + 0.5, 0., self.cfg.commands.max_curriculum)
+            self.command_ranges["lin_vel_y"][0] = np.clip(self.command_ranges["lin_vel_y"][0] - 0.5, -self.cfg.commands.max_curriculum, 0.)
+            self.command_ranges["lin_vel_y"][1] = np.clip(self.command_ranges["lin_vel_y"][1] + 0.5, 0., self.cfg.commands.max_curriculum)
+            self.command_ranges["lin_vel_z"][0] = np.clip(self.command_ranges["lin_vel_z"][0] - 0.2, -self.cfg.commands.max_curriculum_vel_z, 0.)
+            self.command_ranges["lin_vel_z"][1] = np.clip(self.command_ranges["lin_vel_z"][1] + 0.2, 0., self.cfg.commands.max_curriculum_vel_z)
+
 
     #------------ reward functions----------------
     def _reward_lin_vel_z(self):
-        # Penalize z axis base linear velocity
-        return torch.clamp(-self.projected_gravity[:,2],0,1) * torch.square(self.base_lin_vel[:, 2])
+        # Track commanded z-axis base linear velocity directly.
+        z_vel_error = self.base_lin_vel[:, 2] - self.commands[:, 4]
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.square(z_vel_error)
 
     def _reward_ang_vel_xy(self):
         # Penalize xy axes base angular velocity
@@ -283,11 +321,6 @@ class D1Command(LeggedRobot):
         # Penalize non flat base orientation
         return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(self.projected_gravity[:, 1])
 
-    def _reward_base_height(self):
-        # Track the commanded base height directly.
-        base_height = self._get_base_heights()
-        return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.square(base_height - self.commands[:, 4])
-        
     def _reward_torques(self):
         # Penalize torques
         return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.sum(torch.square(self.torques), dim=1)
