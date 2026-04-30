@@ -68,6 +68,7 @@ def play(args):
     env_cfg.control.jump_resampling_time = 10.0
 
     env_cfg.commands.heading_command = False
+    env_cfg.commands.resampling_time = 1e9
     
     env_cfg.init_state.random_dof_pos_probability = 0.0
     env_cfg.init_state.random_ori_probability = 0.0
@@ -111,7 +112,7 @@ def play(args):
     #                                                                               **policy_cfg_dict)
     # print(policy)
     # model_dict = torch.load(os.path.join(ROOT_DIR, 'logs/d1_flat/Nov12_18-27-36_/model_6000.pt'))
-    model_path = os.path.join(ROOT_DIR, 'logs/d1_flat_height/Apr23_12-47-43_/model_6000.pt')
+    model_path = os.path.join(ROOT_DIR, 'logs/d1h_flat_height/Apr29_15-58-40_/model_10000.pt')
     model_dict = torch.load(model_path)
 
     policy.load_state_dict(model_dict['model_state_dict'])
@@ -165,14 +166,15 @@ def play(args):
     xy_vel = 0
     feet_air_time = 0
 
-    # 初始化命令值（用于平滑控制）
+    # 初始化命令值
     command_x = 0.0
     command_y = 0.0
     command_yaw = 0.0
     has_height_command = env.commands.shape[1] >= 5
     if has_height_command and hasattr(env_cfg.commands.ranges, "base_height"):
         height_min, height_max = env_cfg.commands.ranges.base_height
-        command_height = 0.5 * (height_min + height_max)
+        initial_height = getattr(env_cfg.rewards, "base_height_target", 0.5 * (height_min + height_max))
+        command_height = float(np.clip(initial_height, height_min, height_max))
         print(f"height command enabled: range=({height_min:.3f}, {height_max:.3f}), init={command_height:.3f}")
     else:
         height_min = None
@@ -185,11 +187,33 @@ def play(args):
     max_y_vel = 1.0
     # heading_command = 0.5
     max_yaw_vel = 1.0
+    height_step = 0.02
+
+    def apply_manual_commands(obs_tensor):
+        env.commands[:, 0] = command_x
+        env.commands[:, 1] = command_y
+        env.commands[:, 2] = command_yaw
+        env.commands[:, 3] = 0.0
+        if has_height_command:
+            env.commands[:, 4] = command_height
+            command_obs = env.commands[:, [0, 1, 2, 4]] * env.commands_scale
+        else:
+            command_obs = env.commands[:, :3] * env.commands_scale
+
+        obs_tensor[:, 9:9 + command_obs.shape[1]] = command_obs
+        env.obs_buf[:, 9:9 + command_obs.shape[1]] = command_obs
+        hist_start = obs_tensor.shape[1] - env.cfg.env.history_len * env.cfg.env.n_proprio
+        last_hist_start = hist_start + (env.cfg.env.history_len - 1) * env.cfg.env.n_proprio
+        obs_tensor[:, last_hist_start + 9:last_hist_start + 9 + command_obs.shape[1]] = command_obs
+        env.obs_buf[:, last_hist_start + 9:last_hist_start + 9 + command_obs.shape[1]] = command_obs
+        return obs_tensor
+
+    obs = apply_manual_commands(obs)
 
     # 按键状态跟踪字典（用于持续检测按键）
     key_states = {
         "w": False, "s": False, "a": False, "d": False,
-        "left": False, "right": False, "up": False, "down": False,
+        "left": False, "right": False,
     }
 
     # 订阅键盘事件（如果环境有viewer）
@@ -227,10 +251,12 @@ def play(args):
                     key_states["left"] = (evt.value > 0)
                 elif evt.action == "right_pressed":
                     key_states["right"] = (evt.value > 0)
-                elif evt.action == "up_pressed":
-                    key_states["up"] = (evt.value > 0)
-                elif evt.action == "down_pressed":
-                    key_states["down"] = (evt.value > 0)
+                elif evt.action == "up_pressed" and has_height_command and evt.value > 0:
+                    command_height = min(command_height + height_step, height_max)
+                    print(f"command_height: {command_height:.3f}")
+                elif evt.action == "down_pressed" and has_height_command and evt.value > 0:
+                    command_height = max(command_height - height_step, height_min)
+                    print(f"command_height: {command_height:.3f}")
             
             # 根据按键状态设置命令值
             # W/S 控制 x 方向（前进/后退）
@@ -257,22 +283,7 @@ def play(args):
             else:
                 command_y = 0.0
 
-            # ↑/↓ 控制机身高度
-            if has_height_command:
-                if key_states["up"]:
-                    command_height = height_max
-                elif key_states["down"]:
-                    command_height = height_min
-                else:
-                    command_height = 0.5 * (height_min + height_max)
-
-        # 设置命令值
-        env.commands[:,0] = command_x  # x方向速度
-        env.commands[:,1] = command_y  # y方向速度
-        env.commands[:,2] = command_yaw #command_yaw # yaw角速度
-        env.commands[:,3] = 0
-        if has_height_command:
-            env.commands[:,4] = command_height
+        obs = apply_manual_commands(obs)
         # print("env.commands:",env.commands)
 
         # if i % 100 == 0:
@@ -284,6 +295,7 @@ def play(args):
         # if i % 10 == 0:
         #     print("before step:", env.commands[0,:3])
         obs, privileged_obs, rewards,costs,dones, infos = env.step(actions)
+        obs = apply_manual_commands(obs)
 
         env.gym.step_graphics(env.sim) # required to render in headless mode
         env.gym.render_all_camera_sensors(env.sim)
