@@ -60,7 +60,7 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
         max_curriculum = 1.0
         max_curriculum_x = 2.0
         max_curriculum_x_back = 1.0
-        max_curriculum_y = 1.0
+        max_curriculum_y = 0.0
         max_curriculum_yaw = 1.0
         num_commands = 5  # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading , base_height(in heading mode ang_vel_yaw is recomputed from heading error)
         resampling_time = 5.  # time before command are changed[s]
@@ -68,7 +68,7 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
         global_reference = False
         class ranges:
             lin_vel_x = [-1.0, 1.0]  # min max [m/s]
-            lin_vel_y = [-1.0, 1.0]  # min max [m/s]
+            lin_vel_y = [0.0, 0.0]  # min max [m/s]
             ang_vel_yaw = [-1.0, 1.0]  # min max [rad/s]
             heading = [-3.14, 3.14]
             base_height = [0.35, 0.45] # min max [m]
@@ -83,6 +83,7 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
         self_collisions = 0 # 1 to disable, 0 to enable...bitwise filter
         replace_cylinder_with_capsule = False  # replace collision cylinders with capsules, leads to faster/more stable simulation
         flip_visual_attachments = False
+        wheel_radius = 0.085
   
     class rewards( LeggedRobotCfg.rewards ):
 
@@ -100,30 +101,32 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
             torques = 0.0
             powers = -2e-5
             termination = -100.0
-            tracking_lin_vel_x = 15.0
-            tracking_lin_vel_y = 10.0
+            tracking_lin_vel_x = 10.0
+            tracking_lin_vel_y = 0
             tracking_ang_vel = 8.0
-            lin_vel_z = -0.5
+            lin_vel_z = -0.0
             orientation = -10.0
             ang_vel_xy = -0.05
-            dof_thigh_vel = 0.0  #-0.05
+            dof_thigh_vel = -0.05
             dof_acc = -2.5e-7
             # base_height = -10.0
-            feet_air_time = 3.0
-            collision = -2.0
+            feet_air_time = 0.0
+            collision = -5.0
             feet_stumble = 0.0
             action_rate = -0.01
             upward = 2.0
             # keep_still = -0.5
-            tracking_base_height = 4.0
+            tracking_base_height = 10.0
              
             # finetune
             collision_head = -5.0
             body_pos_to_feet_x = 0.5
             body_feet_distance_x = -0.2
-            body_feet_distance_y = -0.8
+            body_feet_distance_y = -1.0
             body_symmetry_y = 0.1
             body_symmetry_z = 0.3
+            no_jump = -2.0
+            collision_hard = -10.0
         
 
     class costs(LeggedRobotCfg.costs):
@@ -255,3 +258,13 @@ class D1HFlatHeight(D1HHeightCommand):
         cmd_still = ((torch.norm(self.commands[:, :2], dim=1) < 0.1)).float()
         base_motion = (torch.sum(torch.square(self.base_lin_vel), dim=1))
         return cmd_still * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * base_motion
+
+    def _reward_no_jump(self):
+        contacts = self.contact_forces[:, self.feet_indices, 2] > 10.
+        airborne = torch.sum(contacts.float(), dim=1) == 0
+        moving_cmd = torch.norm(self.commands[:, :2], dim=1) > 0.1
+        return airborne.float() * moving_cmd.float()
+
+    def _reward_collision_hard(self):
+        contact_force = torch.norm(self.contact_forces[:, self.penalised_contact_indices, :], dim=-1)
+        return torch.sum((contact_force > 100.).float(), dim=1)

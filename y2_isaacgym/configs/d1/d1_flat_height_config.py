@@ -63,21 +63,22 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         use_filter = True
 
     class commands( LeggedRobotCfg.commands ):
-        curriculum = False
+        curriculum = True
         # yaw_curriculum = False
         # heading_curriculum = False
-        max_curriculum = 1.5
-        num_commands = 5  # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading, base_height
-        resampling_time = 10.  # time before command are changed[s]
+        max_curriculum = 3
+        num_commands = 5  # lin_vel_x, lin_vel_y, ang_vel_yaw, heading, lin_vel_z
+        resampling_time = 5.  # time before command are changed[s]
         heading_command = True  # if true: compute ang vel command from heading error
         global_reference = False
+        zero_height_cmd_prob = 0.3
 
         class ranges:
-            lin_vel_x = [-0.5, 0.5]  # min max [m/s]
-            lin_vel_y = [-0.5, 0.5]  # min max [m/s]
+            lin_vel_x = [-1, 1]  # min max [m/s]
+            lin_vel_y = [-1, 1]  # min max [m/s]
             ang_vel_yaw = [-1, 1]  # min max [rad/s]
             heading = [-3.14, 3.14]
-            base_height = [0.25, 0.50]  # min max [m]
+            lin_vel_z = [-0.1, 0.1]  # min max [m/s] 
  
     class asset( LeggedRobotCfg.asset ):
         file = '{ROOT_DIR}/resources/d1/urdf/robot.urdf'
@@ -125,6 +126,8 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         soft_torque_limit = 0.9
         max_contact_force = 500.  # forces above this value are penalized
         tracking_height_sigma = 0.05
+        height_target_min = 0.25
+        height_target_max = 0.5
 
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = 0.0
@@ -132,6 +135,8 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             termination = 0.0
             tracking_lin_vel = 2.0
             tracking_ang_vel = 1.0
+            tracking_height_velocity = 1.0
+            lin_vel_z = -0.1
             orientation = -1.0
             orientation_y = -5.0
             ang_vel_xy = -0.05
@@ -240,9 +245,18 @@ class D1FlatHeight(D1Command):
 
     def _reward_tracking_base_height(self):
         base_height = self._get_base_heights()
-        height_error = base_height - self.commands[:,4]
+        height_error = base_height - self.target_height
 
         return torch.exp(-(height_error ** 2) / self.cfg.rewards.tracking_height_sigma)
+
+    def _reward_tracking_height_velocity(self):
+        lin_vel_z_cmd = (self.target_height - self.last_target_height) / self.dt
+        height_vel_error = torch.square(lin_vel_z_cmd - self.base_lin_vel[:, 2])
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp(-height_vel_error / 1e-4)
+
+    def _reward_lin_vel_z(self):
+        height_cmd_gate = (torch.abs(self.commands[:, 4] < 0.01)).float()
+        return height_cmd_gate * torch.square(self.base_lin_vel[:, 2])
 
     def _reward_stand_still(self):
         # 惩罚无命令下滑动
