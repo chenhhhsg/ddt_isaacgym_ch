@@ -112,7 +112,7 @@ def play(args):
     #                                                                               **policy_cfg_dict)
     # print(policy)
     # model_dict = torch.load(os.path.join(ROOT_DIR, 'logs/d1_flat/Nov12_18-27-36_/model_6000.pt'))
-    model_path = os.path.join(ROOT_DIR, 'logs/d1h_flat_height/May06_03-07-12_/model_10000.pt')
+    model_path = os.path.join(ROOT_DIR, 'logs/d1h_flat_height/May08_03-48-00_/model_10000.pt')
     model_dict = torch.load(model_path)
 
     policy.load_state_dict(model_dict['model_state_dict'])
@@ -170,24 +170,32 @@ def play(args):
     command_x = 0.0
     command_y = 0.0
     command_yaw = 0.0
-    has_height_command = env.commands.shape[1] >= 5
-    if has_height_command and hasattr(env_cfg.commands.ranges, "base_height"):
-        height_min, height_max = env_cfg.commands.ranges.base_height
-        initial_height = getattr(env_cfg.rewards, "base_height_target", 0.5 * (height_min + height_max))
-        command_height = float(np.clip(initial_height, height_min, height_max))
-        print(f"height command enabled: range=({height_min:.3f}, {height_max:.3f}), init={command_height:.3f}")
+    command_height_vel = 0.0
+    has_height_command = env.commands.shape[1] >= 5 and hasattr(env, "target_height")
+    if has_height_command and hasattr(env_cfg.commands.ranges, "lin_vel_z"):
+        height_vel_min, height_vel_max = env_cfg.commands.ranges.lin_vel_z
+        height_min = getattr(env_cfg.rewards, "height_target_min", None)
+        height_max = getattr(env_cfg.rewards, "height_target_max", None)
+        print(
+            f"height velocity command enabled: "
+            f"vel_range=({height_vel_min:.3f}, {height_vel_max:.3f}), "
+            f"target_range=({height_min:.3f}, {height_max:.3f})"
+        )
     else:
+        has_height_command = False
+        height_vel_min = None
+        height_vel_max = None
         height_min = None
         height_max = None
-        command_height = None
         print("height command disabled for this task")
     
     # 命令速度和加速度限制
-    max_x_vel = 1.5
+    max_x_vel = 1.0
     max_y_vel = 1.0
     # heading_command = 0.5
     max_yaw_vel = 1.0
-    height_step = 0.02
+    max_height_vel = height_vel_max if has_height_command else 0.0
+    min_height_vel = height_vel_min if has_height_command else 0.0
 
     def apply_manual_commands(obs_tensor):
         env.commands[:, 0] = command_x
@@ -195,8 +203,12 @@ def play(args):
         env.commands[:, 2] = command_yaw
         env.commands[:, 3] = 0.0
         if has_height_command:
-            env.commands[:, 4] = command_height
-            command_obs = env.commands[:, [0, 1, 2, 4]] * env.commands_scale
+            env.commands[:, 4] = command_height_vel
+            cmd_height = env.target_height - env.cfg.rewards.base_height_target
+            command_obs = torch.cat((
+                env.commands[:, :3] * env.commands_scale[:3],
+                cmd_height.unsqueeze(-1) * env.commands_scale[3],
+            ), dim=-1)
         else:
             command_obs = env.commands[:, :3] * env.commands_scale
 
@@ -213,7 +225,7 @@ def play(args):
     # 按键状态跟踪字典（用于持续检测按键）
     key_states = {
         "w": False, "s": False, "a": False, "d": False,
-        "left": False, "right": False,
+        "left": False, "right": False, "up": False, "down": False,
     }
 
     # 订阅键盘事件（如果环境有viewer）
@@ -251,12 +263,10 @@ def play(args):
                     key_states["left"] = (evt.value > 0)
                 elif evt.action == "right_pressed":
                     key_states["right"] = (evt.value > 0)
-                elif evt.action == "up_pressed" and has_height_command and evt.value > 0:
-                    command_height = min(command_height + height_step, height_max)
-                    print(f"command_height: {command_height:.3f}")
-                elif evt.action == "down_pressed" and has_height_command and evt.value > 0:
-                    command_height = max(command_height - height_step, height_min)
-                    print(f"command_height: {command_height:.3f}")
+                elif evt.action == "up_pressed":
+                    key_states["up"] = (evt.value > 0)
+                elif evt.action == "down_pressed":
+                    key_states["down"] = (evt.value > 0)
             
             # 根据按键状态设置命令值
             # W/S 控制 x 方向（前进/后退）
@@ -282,6 +292,14 @@ def play(args):
                 command_y = -max_y_vel
             else:
                 command_y = 0.0
+
+            if has_height_command:
+                if key_states["up"]:
+                    command_height_vel = max_height_vel
+                elif key_states["down"]:
+                    command_height_vel = min_height_vel
+                else:
+                    command_height_vel = 0.0
 
         obs = apply_manual_commands(obs)
         # print("env.commands:",env.commands)
@@ -352,7 +370,8 @@ def play(args):
                         'contact_forces_z': env.contact_forces[robot_index, env.feet_indices, 2].cpu().numpy(),
                         'robot_mass': robot_mass,
                         'base_height': env._get_base_heights()[robot_index].item(),
-                        'command_height': env.commands[robot_index, 4].item() if has_height_command else 0.0,
+                        'target_height': env.target_height[robot_index].item() if has_height_command else 0.0,
+                        'command_height_vel': env.commands[robot_index, 4].item() if has_height_command else 0.0,
                         'torques': env.torques[robot_index, :].tolist(),
                         'velocities': env.dof_vel[robot_index, :].tolist(),
                         'wheel_left_vel': left_wheel_lin,
@@ -373,6 +392,6 @@ def play(args):
 
 if __name__ == '__main__':
     RECORD_FRAMES = False
-    PLOT_STATES = True
+    PLOT_STATES = False
     args = get_args()
     play(args)

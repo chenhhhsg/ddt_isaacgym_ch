@@ -14,12 +14,13 @@ from utils.math import wrap_to_pi
 class D1HHeightCommand(LeggedRobot):
     def _init_buffers(self):
         super()._init_buffers()
+        height_cmd_scale = getattr(self.obs_scales, "lin_vel_z_cmd", self.obs_scales.height_measurements)
         self.commands_scale = torch.tensor(
             [
                 self.obs_scales.lin_vel,
                 self.obs_scales.lin_vel,
                 self.obs_scales.ang_vel,
-                1.0,
+                height_cmd_scale,
             ],
             device=self.device,
             requires_grad=False,
@@ -27,6 +28,9 @@ class D1HHeightCommand(LeggedRobot):
         self.hip_joint_indices = [0, 4]
         self.thigh_joint_indices = [1, 5]
         self.foot_joint_indices = [3, 7]
+        h0 = float(self.cfg.rewards.base_height_target)
+        self.target_height = torch.full((self.num_envs,), h0, device=self.device, dtype=torch.float)
+        self.last_target_height = self.target_height.clone()
     
     def _create_envs(self):
         """ Creates environments:
@@ -270,11 +274,17 @@ class D1HHeightCommand(LeggedRobot):
 
     def compute_observations(self):
         # 3 + 3 + 3 + 4 + 8 + 8 + 8 = 37
+        cmd_height = self.target_height - self.cfg.rewards.base_height_target
+        command_obs = torch.cat((
+            self.commands[:, :3] * self.commands_scale[:3],
+            cmd_height.unsqueeze(-1) * self.commands_scale[3],
+        ), dim=-1)
+
         obs_buf = torch.cat((
             self.base_lin_vel * self.obs_scales.lin_vel,
             self.base_ang_vel * self.obs_scales.ang_vel,
             self.projected_gravity,
-            self.commands[:, [0, 1, 2, 4]] * self.commands_scale,
+            command_obs,
             (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
             self.dof_vel * self.obs_scales.dof_vel,
             self.action_history_buf[:, -1],
@@ -355,6 +365,13 @@ class D1HHeightCommand(LeggedRobot):
         if self.cfg.domain_rand.disturbance and (self.common_step_counter % self.cfg.domain_rand.disturbance_interval == 0):
             self._disturbance_robots()
 
+        self.last_target_height = self.target_height.clone()
+        self.target_height = torch.clamp(
+            self.target_height + self.commands[:, 4] * self.dt,
+            self.cfg.rewards.height_target_min,
+            self.cfg.rewards.height_target_max,
+        )
+
     def _resample_commands(self, env_ids):
         if len(env_ids) == 0:
             return
@@ -362,8 +379,27 @@ class D1HHeightCommand(LeggedRobot):
         self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
 
-        num_envs = len(env_ids)
-        self.commands[env_ids, 4] = torch_rand_float(self.command_ranges["base_height"][0], self.command_ranges["base_height"][1], (num_envs, 1), device=self.device).squeeze(1)
+        lin_vel_z_range = self.command_ranges.get("lin_vel_z", self.command_ranges.get("base_height", [-0.1, 0.1]))
+        sampled_vz = torch_rand_float(
+            lin_vel_z_range[0],
+            lin_vel_z_range[1],
+            (len(env_ids), 1),
+            device=self.device,
+        ).squeeze(1)
+        zero_mask = torch.rand(len(env_ids), device=self.device) < self.cfg.commands.zero_height_cmd_prob
+        self.commands[env_ids, 4] = torch.where(zero_mask, torch.zeros(len(env_ids), device=self.device), sampled_vz)
+
+        zero_height_ids = env_ids[zero_mask]
+        nonzero_height_ids = env_ids[~zero_mask]
+        if len(zero_height_ids) > 0:
+            self.target_height[zero_height_ids] = torch_rand_float(
+                self.cfg.rewards.height_target_min,
+                self.cfg.rewards.height_target_max,
+                (len(zero_height_ids), 1),
+                device=self.device,
+            ).squeeze(1)
+        if len(nonzero_height_ids) > 0:
+            self.target_height[nonzero_height_ids] = self.cfg.rewards.base_height_target
 
         if self.cfg.commands.heading_command:
             self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)

@@ -57,21 +57,22 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
 
     class commands( LeggedRobotCfg.commands ):
         curriculum = True 
-        max_curriculum = 1.0
+        max_curriculum = 2.0
         max_curriculum_x = 2.0
         max_curriculum_x_back = 1.0
         max_curriculum_y = 0.0
         max_curriculum_yaw = 1.0
-        num_commands = 5  # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading , base_height(in heading mode ang_vel_yaw is recomputed from heading error)
+        num_commands = 5  # lin_vel_x, lin_vel_y, ang_vel_yaw, heading, lin_vel_z
         resampling_time = 5.  # time before command are changed[s]
         heading_command = False  # if true: compute ang vel command from heading error
         global_reference = False
+        zero_height_cmd_prob = 0.3
         class ranges:
             lin_vel_x = [-1.0, 1.0]  # min max [m/s]
             lin_vel_y = [0.0, 0.0]  # min max [m/s]
             ang_vel_yaw = [-1.0, 1.0]  # min max [rad/s]
             heading = [-3.14, 3.14]
-            base_height = [0.35, 0.45] # min max [m]
+            lin_vel_z = [-0.1, 0.1]  # min max [m/s]
 
     class asset( LeggedRobotCfg.asset ):
         file = '{ROOT_DIR}/resources/d1h/urdf/robot.urdf'
@@ -95,22 +96,26 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
         soft_dof_vel_limit = 0.9
         soft_torque_limit = 0.9
         base_height_target = 0.45
+        height_target_min = 0.25
+        height_target_max = 0.5
         max_contact_force = 500.  # forces above this value are penalized
 
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = 0.0
             powers = -2e-5
             termination = -100.0
-            tracking_lin_vel_x = 10.0
-            tracking_lin_vel_y = 0
+            tracking_lin_vel = 0.0
+            feet_air_time = 0.0
+            tracking_lin_vel_x = 15.0
+            tracking_lin_vel_y = 0.0
             tracking_ang_vel = 8.0
-            lin_vel_z = -0.0
+            tracking_height_velocity = 1.0
+            lin_vel_z = -2.0
             orientation = -10.0
             ang_vel_xy = -0.05
             dof_thigh_vel = -0.05
             dof_acc = -2.5e-7
             # base_height = -10.0
-            feet_air_time = 0.0
             collision = -5.0
             feet_stumble = 0.0
             action_rate = -0.01
@@ -193,8 +198,8 @@ class D1HFlatHeightCfgPPO( LeggedRobotCfgPPO ):
         policy_class_name = 'ActorCriticBarlowTwins'
         runner_class_name = 'OnConstraintPolicyRunner'
         algorithm_class_name = 'NP3O'
-        save_interval = 3000
-        max_iterations = 6000
+        save_interval = 5000
+        max_iterations = 10000
         num_steps_per_env = 24
         resume = False
         resume_path = ''
@@ -204,14 +209,14 @@ class D1HFlatHeight(D1HHeightCommand):
 
     ## 使用stand_still_vel + base_height 设置默认高度 or stand_still 设置
     def _reward_lin_vel_z(self):
-        # Penalize z axis base linear velocity
-        return torch.square(self.base_lin_vel[:, 2])
+        # 惩罚没有高度命令时的速度
+        height_cmd_gate = (torch.abs(self.commands[:, 4]) < 0.01).float()
+        return height_cmd_gate * torch.square(self.base_lin_vel[:, 2])
     
-
     def _reward_tracking_lin_vel_x(self):
         # Tracking of linear velocity commands (x axis)
-        base_height_error = torch.clamp(torch.square(self._get_base_heights() - self.commands[:,4]), 0, 1)
-        base_height_sigma = 0.5 + 0.5 * torch.exp(-base_height_error / self.cfg.rewards.tracking_height_sigma)
+        base_height_error = torch.clamp(torch.square(self._get_base_heights() - self.target_height), 0, 1)
+        base_height_sigma = 0.7 + 0.3 * torch.exp(-base_height_error / self.cfg.rewards.tracking_height_sigma)
         lin_vel_x_error = torch.clamp(torch.square(self.commands[:, 0] - self.base_lin_vel[:, 0]), 0, 1)
         tracking_sigma = self.cfg.rewards.tracking_sigma * (0.1+torch.abs(self.commands[:, 0]))/(0.25+torch.abs(self.commands[:, 0]))
         reward = torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-lin_vel_x_error/tracking_sigma) * base_height_sigma
@@ -219,7 +224,7 @@ class D1HFlatHeight(D1HHeightCommand):
     
     def _reward_tracking_lin_vel_y(self):
         # Tracking of linear velocity commands (y axis)
-        base_height_error = torch.clamp(torch.square(self._get_base_heights() - self.commands[:,4]), 0, 1)
+        base_height_error = torch.clamp(torch.square(self._get_base_heights() - self.target_height), 0, 1)
         base_height_sigma = 0.5 + 0.5 * torch.exp(-base_height_error / self.cfg.rewards.tracking_height_sigma)
         lin_vel_y_error = torch.clamp(torch.square(self.commands[:, 1] - self.base_lin_vel[:, 1]), 0, 1)
         tracking_sigma = self.cfg.rewards.tracking_sigma * (0.1+torch.abs(self.commands[:, 1]))/(0.25+torch.abs(self.commands[:, 1]))
@@ -228,30 +233,23 @@ class D1HFlatHeight(D1HHeightCommand):
 
     def _reward_tracking_ang_vel(self):
         # Tracking of angular velocity commands (yaw)
-        base_height_error = torch.clamp(torch.square(self._get_base_heights() - self.commands[:,4]), 0, 1)
-        base_height_sigma = 0.5 + 0.5 * torch.exp(-base_height_error / self.cfg.rewards.tracking_height_sigma)
+        base_height_error = torch.clamp(torch.square(self._get_base_heights() - self.target_height), 0, 1)
+        base_height_sigma = 0.7 + 0.3 * torch.exp(-base_height_error / self.cfg.rewards.tracking_height_sigma)
         ang_vel_error = torch.square(self.commands[:, 2] - self.base_ang_vel[:, 2])
         tracking_sigma = self.cfg.rewards.tracking_sigma * (0.1+torch.abs(self.commands[:, 2]))/(0.25+torch.abs(self.commands[:, 2]))
         return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-ang_vel_error/tracking_sigma) * base_height_sigma
     
     def _reward_tracking_base_height(self):
-        # Tracking of base_height_command (height_command)
-        base_height_error = torch.clamp(torch.square(self._get_base_heights() - self.commands[:,4]), 0, 1)
+        base_height_error = torch.clamp(torch.square(self._get_base_heights() - self.target_height), 0, 1)
         reward = torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-base_height_error/self.cfg.rewards.tracking_height_sigma)
         return reward
 
-    def _reward_feet_air_time(self):
-        # Reward leg lifting mainly for side-walking commands.
-        contact = self.contact_forces[:, self.feet_indices, 2] > 1.
-        contact_filt = torch.logical_or(contact, self.last_contacts)
-        self.last_contacts = contact
-        first_contact = (self.feet_air_time > 0.) * contact_filt
-        self.feet_air_time += self.dt
-        rew_airTime = torch.sum((self.feet_air_time - 0.5) * first_contact, dim=1)
-        side_walk_cmd = (torch.abs(self.commands[:, 1]) > 0.1) & (torch.abs(self.commands[:, 1]) > torch.abs(self.commands[:, 0]))
-        rew_airTime *= side_walk_cmd
-        self.feet_air_time *= ~contact_filt
-        return rew_airTime
+    def _reward_tracking_height_velocity(self):
+        # 辅助跟踪速度奖励函数
+        lin_vel_z_cmd = (self.target_height - self.last_target_height) / self.dt
+        height_vel_error = torch.square(lin_vel_z_cmd - self.base_lin_vel[:, 2])
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp( -height_vel_error / 1e-4)
+
 
     def _reward_stand_still(self):
         # 惩罚无命令下滑动

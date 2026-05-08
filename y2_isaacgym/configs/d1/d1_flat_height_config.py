@@ -47,13 +47,13 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
     class control( LeggedRobotCfg.control ):
         # PD Drive parameters:
         control_type = 'P'
-        stiffness = {'hip': 40.,
-                     'thigh': 40.,
-                     'calf': 40.,
+        stiffness = {'hip': 50.,
+                     'thigh': 50.,
+                     'calf': 50.,
                      'foot': 10.}  # [N*m/rad]
-        damping = {'hip': 1.0,
-                   'thigh': 1.0,
-                   'calf': 1.0,
+        damping = {'hip': 2.0,
+                   'thigh': 2.0,
+                   'calf': 2.0,
                    'foot': 0.5}     #  [N*m*s/rad]
         # action scale: target angle = actionScale * action + defaultAngle
         action_scale = 0.25
@@ -66,19 +66,19 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         curriculum = True
         # yaw_curriculum = False
         # heading_curriculum = False
-        max_curriculum = 3
+        max_curriculum = 2
         num_commands = 5  # lin_vel_x, lin_vel_y, ang_vel_yaw, heading, lin_vel_z
-        resampling_time = 5.  # time before command are changed[s]
+        resampling_time = 10.  # time before command are changed[s]
         heading_command = True  # if true: compute ang vel command from heading error
         global_reference = False
-        zero_height_cmd_prob = 0.3
+        zero_height_cmd_prob = 0.5
 
         class ranges:
             lin_vel_x = [-1, 1]  # min max [m/s]
             lin_vel_y = [-1, 1]  # min max [m/s]
             ang_vel_yaw = [-1, 1]  # min max [rad/s]
             heading = [-3.14, 3.14]
-            lin_vel_z = [-0.1, 0.1]  # min max [m/s] 
+            lin_vel_z = [-0.3, 0.3]  # min max [m/s] 
  
     class asset( LeggedRobotCfg.asset ):
         file = '{ROOT_DIR}/resources/d1/urdf/robot.urdf'
@@ -127,7 +127,8 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         max_contact_force = 500.  # forces above this value are penalized
         tracking_height_sigma = 0.05
         height_target_min = 0.25
-        height_target_max = 0.5
+        height_target_max = 0.55
+        base_height_target = 0.45
 
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = 0.0
@@ -136,7 +137,7 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             tracking_lin_vel = 2.0
             tracking_ang_vel = 1.0
             tracking_height_velocity = 1.0
-            lin_vel_z = -0.1
+            lin_vel_z = -0.5
             orientation = -1.0
             orientation_y = -5.0
             ang_vel_xy = -0.05
@@ -244,23 +245,24 @@ class D1FlatHeight(D1Command):
     ## 使用stand_still_vel + base_height 设置默认高度 or stand_still 设置
 
     def _reward_tracking_base_height(self):
+        # 跟踪高度奖励，鼓励机器人保持在目标高度附近，避免过高或过低的姿态
         base_height = self._get_base_heights()
         height_error = base_height - self.target_height
-
         return torch.exp(-(height_error ** 2) / self.cfg.rewards.tracking_height_sigma)
 
-    def _reward_tracking_height_velocity(self):
+    def _reward_tracking_height_velocity(self):  
+        # 高度跟踪速度奖励，鼓励机器人以合适的速度调整高度，避免过快或过慢的高度变化
         lin_vel_z_cmd = (self.target_height - self.last_target_height) / self.dt
         height_vel_error = torch.square(lin_vel_z_cmd - self.base_lin_vel[:, 2])
         return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp(-height_vel_error / 1e-4)
 
     def _reward_lin_vel_z(self):
-        height_cmd_gate = (torch.abs(self.commands[:, 4] < 0.01)).float()
+        # 无命令下保持高度
+        height_cmd_gate = (torch.abs(self.commands[:, 4]) < 0.01).float()
         return height_cmd_gate * torch.square(self.base_lin_vel[:, 2])
 
     def _reward_stand_still(self):
         # 惩罚无命令下滑动
         cmd_still = ((torch.norm(self.commands[:, :2], dim=1) < 0.1)).float()
         base_motion = (torch.sum(torch.square(self.base_lin_vel), dim=1))
-
         return cmd_still * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * base_motion

@@ -253,11 +253,8 @@ class D1Command(LeggedRobot):
             self._disturbance_robots()
 
         self.last_target_height = self.target_height.clone()
-        self.target_height = torch.clamp(
-            self.target_height + self.commands[:, 4] * self.dt,
-            self.cfg.rewards.height_target_min,
-            self.cfg.rewards.height_target_max,
-        )
+        self.target_height = torch.clamp( self.target_height + self.commands[:, 4] * self.dt
+                                         , self.cfg.rewards.height_target_min, self.cfg.rewards.height_target_max)
 
 
     def _resample_commands(self, env_ids):  # 需要加入高度命令
@@ -269,8 +266,10 @@ class D1Command(LeggedRobot):
         if len(env_ids) == 0:
             return
 
-        self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0]
+                                                     , self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0]
+                                                     , self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
 
         lin_vel_z_range = self.command_ranges.get("lin_vel_z", self.command_ranges.get("base_height", [-0.1, 0.1]))
         sampled_vz = torch_rand_float(
@@ -284,19 +283,32 @@ class D1Command(LeggedRobot):
 
         zero_height_ids = env_ids[zero_mask]
         nonzero_height_ids = env_ids[~zero_mask]
+        # if len(zero_height_ids) > 0:
+        #     self.target_height[zero_height_ids] = torch_rand_float(
+        #         self.cfg.rewards.height_target_min,
+        #         self.cfg.rewards.height_target_max,
+        #         (len(zero_height_ids), 1),
+        #         device=self.device,
+        #     ).squeeze(1)
         if len(zero_height_ids) > 0:
-            self.target_height[zero_height_ids] = torch_rand_float(
-                self.cfg.rewards.height_target_min,
-                self.cfg.rewards.height_target_max,
-                (len(zero_height_ids), 1),
-                device=self.device,
-            ).squeeze(1)
+            n = len(zero_height_ids)
+            probs = torch.tensor([0.4, 0.1, 0.1, 0.4], device=self.device)
+            bins = torch.multinomial(probs, n, replacement=True)
+            lows = torch.tensor([0.25, 0.30, 0.35, 0.45], device=self.device)
+            highs = torch.tensor([0.30, 0.35, 0.45, 0.55], device=self.device)
+            low = lows[bins]
+            high = highs[bins]
+            self.target_height[zero_height_ids] = low + torch.rand(n, device=self.device) * (high - low)
+            
         if len(nonzero_height_ids) > 0:
             self.target_height[nonzero_height_ids] = self.cfg.rewards.base_height_target
+
         if self.cfg.commands.heading_command:
-            self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+            self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0]
+                                                         , self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         else:
-            self.commands[env_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+            self.commands[env_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0]
+                                                         , self.command_ranges["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
 
         # set small commands to zero
         self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
@@ -399,7 +411,7 @@ class D1Command(LeggedRobot):
     
     def _reward_feet_all_contact(self):
         contact = self.contact_forces[:, self.feet_indices, 2] < 1.
-        return torch.clamp(-self.projected_gravity[:,2],0,1)*0.25 * torch.sum(contact, dim=1)
+        return torch.clamp(-self.projected_gravity[:,2], 0, 1) * 0.25 * torch.sum(contact, dim=1)
 
     # ------------ cost functions----------------
     def _cost_torque_limit(self):
