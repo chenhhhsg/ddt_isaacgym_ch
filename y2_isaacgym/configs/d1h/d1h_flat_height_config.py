@@ -121,7 +121,7 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
             action_rate = -0.01
             upward = 2.0
             # keep_still = -0.5
-            tracking_base_height = 10.0
+            tracking_base_height = 8.0
              
             # finetune
             collision_head = -5.0
