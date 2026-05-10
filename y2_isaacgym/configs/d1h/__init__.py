@@ -10,3 +10,6 @@ task_registry.register("d1h_rough_play",D1HRough,D1HRoughCfg_Play(),D1HRoughCfgP
 
 from .d1h_flat_height_config import *
 task_registry.register("d1h_flat_height",D1HFlatHeight,D1HFlatHeightCfg(),D1HFlatHeightCfgPPO())
+
+from .d1h_slope_height_config import *
+task_registry.register("d1h_slope_height",D1HSlopeHeight,D1HSlopeHeightCfg(),D1HSlopeHeightCfgPPO())

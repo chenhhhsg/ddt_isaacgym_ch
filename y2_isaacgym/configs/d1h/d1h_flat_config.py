@@ -16,6 +16,21 @@ class D1HFlat(LeggedRobot):
         self.hip_joint_indices = [0, 4]
         self.thigh_joint_indices = [1, 5]
         self.foot_joint_indices = [3, 7]
+
+    def _resample_commands(self, env_ids):
+        super()._resample_commands(env_ids)
+        if len(env_ids) == 0:
+            return
+
+        zero_command_mask = torch.rand(len(env_ids), device=self.device) < getattr(self.cfg.commands, "zero_command_prob", 0.0)
+        zero_command_ids = env_ids[zero_command_mask]
+        if len(zero_command_ids) == 0:
+            return
+
+        self.commands[zero_command_ids, :3] = 0.0
+        if self.cfg.commands.heading_command:
+            forward = quat_apply(self.base_quat[zero_command_ids], self.forward_vec[zero_command_ids])
+            self.commands[zero_command_ids, 3] = torch.atan2(forward[:, 1], forward[:, 0])
     
     def _create_envs(self):
         """ Creates environments:
@@ -437,6 +452,7 @@ class D1HFlatCfg( LeggedRobotCfg ):
         resampling_time = 5.  # time before command are changed[s]
         heading_command = False  # if true: compute ang vel command from heading error
         global_reference = False
+        zero_command_prob = 0.1
         class ranges:
             lin_vel_x = [-1.0, 1.0]  # min max [m/s]
             lin_vel_y = [-1.0, 1.0]  # min max [m/s]

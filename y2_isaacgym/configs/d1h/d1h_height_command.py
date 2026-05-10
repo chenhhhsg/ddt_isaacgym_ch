@@ -378,6 +378,7 @@ class D1HHeightCommand(LeggedRobot):
 
         self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        zero_command_mask = torch.rand(len(env_ids), device=self.device) < getattr(self.cfg.commands, "zero_command_prob", 0.0)
 
         lin_vel_z_range = self.command_ranges.get("lin_vel_z", self.command_ranges.get("base_height", [-0.1, 0.1]))
         sampled_vz = torch_rand_float(
@@ -387,6 +388,7 @@ class D1HHeightCommand(LeggedRobot):
             device=self.device,
         ).squeeze(1)
         zero_mask = torch.rand(len(env_ids), device=self.device) < self.cfg.commands.zero_height_cmd_prob
+        zero_mask |= zero_command_mask
         self.commands[env_ids, 4] = torch.where(zero_mask, torch.zeros(len(env_ids), device=self.device), sampled_vz)
 
         zero_height_ids = env_ids[zero_mask]
@@ -407,6 +409,14 @@ class D1HHeightCommand(LeggedRobot):
             self.commands[env_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
 
         self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+        zero_command_ids = env_ids[zero_command_mask]
+        
+        if len(zero_command_ids) > 0:
+            self.commands[zero_command_ids, :3] = 0.0
+            self.commands[zero_command_ids, 4] = 0.0
+            if self.cfg.commands.heading_command:
+                forward = quat_apply(self.base_quat[zero_command_ids], self.forward_vec[zero_command_ids])
+                self.commands[zero_command_ids, 3] = torch.atan2(forward[:, 1], forward[:, 0])
 
     def _update_command_curriculum(self, env_ids):
         """ Implements a curriculum of increasing commands
@@ -436,7 +446,7 @@ class D1HHeightCommand(LeggedRobot):
         # Tracking of linear velocity commands (x axis)
         base_height_sigma = torch.clamp(self._get_base_heights()/self.cfg.rewards.base_height_target, 0, 1) + 0.2
         lin_vel_x_error = torch.clamp(torch.square(self.commands[:, 0] - self.base_lin_vel[:, 0]), 0, 1)
-        tracking_sigma = self.cfg.rewards.tracking_sigma * (0.1+torch.abs(self.commands[:, 0]))/(0.25+torch.abs(self.commands[:, 0]))
+        tracking_sigma = self.cfg.rewards.tracking_sigma * (0.1 + torch.abs(self.commands[:, 0]))/(0.25+torch.abs(self.commands[:, 0]))
         reward = torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-lin_vel_x_error/tracking_sigma)*base_height_sigma
         return reward
     
@@ -444,7 +454,7 @@ class D1HHeightCommand(LeggedRobot):
         # Tracking of linear velocity commands (y axis)
         base_height_sigma = torch.clamp(self._get_base_heights()/self.cfg.rewards.base_height_target, 0, 1) + 0.2
         lin_vel_y_error = torch.clamp(torch.square(self.commands[:, 1] - self.base_lin_vel[:, 1]), 0, 1)
-        tracking_sigma = self.cfg.rewards.tracking_sigma * (0.1+torch.abs(self.commands[:, 1]))/(0.25+torch.abs(self.commands[:, 1]))
+        tracking_sigma = self.cfg.rewards.tracking_sigma * (0.1 + torch.abs(self.commands[:, 1]))/(0.25+torch.abs(self.commands[:, 1]))
         reward = torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-lin_vel_y_error/tracking_sigma)*base_height_sigma
         return reward
 
@@ -496,7 +506,7 @@ class D1HHeightCommand(LeggedRobot):
     def _reward_body_feet_distance_y(self):
         foot_distance_world = self.feet_pos[:,0,:]-self.feet_pos[:,1,:] 
         foot_distance_base = quat_rotate_inverse(self.base_quat, foot_distance_world)
-        foot_y_err = torch.abs(torch.abs(foot_distance_base[:,1])-self.cfg.init_state.desired_feet_distance)/self.cfg.rewards.distance_sigma
+        foot_y_err = torch.abs(torch.abs(foot_distance_base[:,1]) - self.cfg.init_state.desired_feet_distance)/self.cfg.rewards.distance_sigma
         reward = foot_y_err**2
         return reward
 

@@ -10,7 +10,7 @@ from configs.base.legged_robot import LeggedRobot
 from utils.math import wrap_to_pi
 from configs.d1h.d1h_height_command import *
 
-class D1HFlatHeightCfg( LeggedRobotCfg ):
+class D1HSlopeHeightCfg( LeggedRobotCfg ):
     class env(LeggedRobotCfg.env):
         num_envs = 4096
         n_scan = 187
@@ -123,7 +123,10 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
             upward = 2.0
             # keep_still = -0.5
             tracking_base_height = 8.0
-             
+
+            stand_still_wheel = -3.0
+            stand_still_base = -2.0
+
             # finetune
             collision_head = -5.0
             body_pos_to_feet_x = 0.5
@@ -152,7 +155,8 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
             # default_joint = 0.0
 
     class terrain(LeggedRobotCfg.terrain):
-        mesh_type = 'plane'  # "heightfield" # none, plane, heightfield or trimesh
+        # mesh_type = 'plane'  # "heightfield" # none, plane, heightfield or trimesh
+        mesh_type = 'trimesh'  # "heightfield" # none, plane, heightfield or trimesh
         curriculum = True
         measure_heights = True
         include_act_obs_pair_buf = False
@@ -165,7 +169,7 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
         dt = 0.0025
 
 
-class D1HFlatHeightCfgPPO( LeggedRobotCfgPPO ):
+class D1HSlopeHeightCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
         learning_rate = 1.e-3
@@ -195,7 +199,7 @@ class D1HFlatHeightCfgPPO( LeggedRobotCfgPPO ):
 
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
-        experiment_name = 'd1h_flat_height'
+        experiment_name = 'd1h_slope_height'
         policy_class_name = 'ActorCriticBarlowTwins'
         runner_class_name = 'OnConstraintPolicyRunner'
         algorithm_class_name = 'NP3O'
@@ -206,7 +210,7 @@ class D1HFlatHeightCfgPPO( LeggedRobotCfgPPO ):
         resume_path = ''
 
 
-class D1HFlatHeight(D1HHeightCommand):
+class D1HSlopeHeight(D1HHeightCommand):
 
     ## 使用stand_still_vel + base_height 设置默认高度 or stand_still 设置
     def _reward_lin_vel_z(self):
@@ -252,11 +256,23 @@ class D1HFlatHeight(D1HHeightCommand):
         return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp( -height_vel_error / 1e-4)
 
 
-    def _reward_stand_still(self):
+    def _reward_stand_still_wheel(self):
         # 惩罚无命令下滑动
-        cmd_still = ((torch.norm(self.commands[:, :2], dim=1) < 0.1)).float()
+        cmd_still_xy = ((torch.norm(self.commands[:, :2], dim=1) < 0.1)).float()
+        cmd_still_yaw = (torch.abs(self.commands[:, 2]) < 0.1).float()
+        cmd_still = cmd_still_xy * cmd_still_yaw
+        wheel_vel = torch.sum(torch.square(self.dof_vel[:, self.foot_joint_indices]), dim=1)
+        return cmd_still * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * (1 - torch.exp(-wheel_vel / 0.005))
+
+
+    def _reward_stand_still_base(self):
+        # 惩罚无命令下滑动
+        cmd_still_xy = ((torch.norm(self.commands[:, :2], dim=1) < 0.1)).float()
+        cmd_still_yaw = (torch.abs(self.commands[:, 2]) < 0.1).float()
+        cmd_still_height = (torch.abs(self.commands[:, 4]) < 0.1).float()
+        cmd_still = cmd_still_xy * cmd_still_yaw * cmd_still_height
         base_motion = (torch.sum(torch.square(self.base_lin_vel), dim=1))
-        return cmd_still * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * base_motion
+        return cmd_still * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * (1 - torch.exp(-base_motion / 0.01))
 
     def _reward_no_jump(self):
         contacts = self.contact_forces[:, self.feet_indices, 2] > 10.

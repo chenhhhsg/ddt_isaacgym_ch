@@ -10,7 +10,7 @@ from configs.base.legged_robot import LeggedRobot
 from utils.math import wrap_to_pi
 from configs.d1.d1_height_command import *
 
-class D1FlatHeightCfg ( LeggedRobotCfg ): 
+class D1SlopeHeightCfg ( LeggedRobotCfg ): 
     class env(LeggedRobotCfg.env):
         num_envs = 4096
         n_scan = 187
@@ -179,8 +179,8 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
             default_joint = 0.0
 
     class terrain(LeggedRobotCfg.terrain):
-        mesh_type = 'plane'  # "heightfield" # none, plane, heightfield or trimesh
-        # mesh_type ='trimesh'
+        # mesh_type = 'plane'  # "heightfield" # none, plane, heightfield or trimesh
+        mesh_type ='trimesh'
         curriculum = True
         measure_heights = True
         include_act_obs_pair_buf = False
@@ -195,7 +195,7 @@ class D1FlatHeightCfg ( LeggedRobotCfg ):
         slope_treshold = 1.0  # slopes above this threshold will be corrected to vertical surfaces
         slope = [0, 0.4]
 
-class D1FlatHeightCfgPPO( LeggedRobotCfgPPO ):
+class D1SlopeHeightCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
         learning_rate = 1.e-3
@@ -227,7 +227,7 @@ class D1FlatHeightCfgPPO( LeggedRobotCfgPPO ):
       
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
-        experiment_name = 'd1_flat_height'
+        experiment_name = 'd1_slope_height'
         policy_class_name = 'ActorCriticBarlowTwins'
         # policy_class_name = 'ActorCriticTransBarlowTwins'
         runner_class_name = 'OnConstraintPolicyRunner'
@@ -240,7 +240,7 @@ class D1FlatHeightCfgPPO( LeggedRobotCfgPPO ):
         resume = False
         resume_path = ''
 
-class D1FlatHeight(D1Command):
+class D1SlopeHeight(D1Command):
 
     ## 使用stand_still_vel + base_height 设置默认高度 or stand_still 设置
 
