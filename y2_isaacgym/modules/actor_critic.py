@@ -104,7 +104,7 @@ class MlpBarlowTwinsActor(nn.Module):
 
     def normalize(self,obs,obs_hist):
         obs = self.obs_normalizer(obs)
-        obs_hist = self.obs_normalizer(obs_hist.reshape(-1,self.num_prop)).reshape(-1,10,self.num_prop)
+        obs_hist = self.obs_normalizer(obs_hist.reshape(-1,self.num_prop)).reshape(-1,self.num_hist * 2,self.num_prop)
         return obs,obs_hist
 
     def forward(self,obs,obs_hist):
@@ -117,7 +117,7 @@ class MlpBarlowTwinsActor(nn.Module):
         b,_,_ = obs_hist_full.size()
         # obs_hist_full = obs_hist_full[:,5:,:].view(b,-1)
         with torch.no_grad():
-            latent = self.mlp_encoder(obs_hist_full[:,5:,:].reshape(b,-1))
+            latent = self.mlp_encoder(obs_hist_full[:,-self.num_hist:,:].reshape(b,-1))
             z = self.latent_layer(latent)
             vel = self.vel_layer(latent)
             # vel = self.history_encoder(obs_hist_full).detach()
@@ -172,8 +172,8 @@ class MlpBarlowTwinsActor(nn.Module):
 
         # obs_hist = obs_hist[:,5:,:].reshape(b,-1)
 
-        z1 = self.mlp_encoder(obs_hist_full[:,5:,:].reshape(b,-1))
-        z2 = self.mlp_encoder(obs_hist[:,5:,:].reshape(b,-1))
+        z1 = self.mlp_encoder(obs_hist_full[:,-self.num_hist:,:].reshape(b,-1))
+        z2 = self.mlp_encoder(obs_hist[:,-self.num_hist:,:].reshape(b,-1))
 
         z1_l = self.latent_layer(z1)
         z1_v = self.vel_layer(z1)
@@ -514,7 +514,7 @@ class ActorCriticBarlowTwins(nn.Module):
 
         # #MlpBarlowTwinsActor
         self.actor_teacher_backbone = MlpBarlowTwinsActor(num_prop=num_prop-3,
-                                      num_hist=5,
+                                      num_hist=num_hist // 2,
                                       num_actions=num_actions,
                                       actor_dims=[512,256,128],
                                       mlp_encoder_dims=[128,64],

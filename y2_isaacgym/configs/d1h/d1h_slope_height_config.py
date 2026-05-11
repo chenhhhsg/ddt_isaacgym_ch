@@ -16,7 +16,7 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
         n_scan = 187
         n_priv_latent =  2 + 1 + 4 + 1 + 1 + 8 + 8 + 8
         n_proprio = 37 # 3+3+3+4+8+8+8
-        history_len = 10
+        history_len = 20
         num_observations = n_proprio + n_scan + history_len*n_proprio + n_priv_latent
         num_actions = 8
     class init_state( LeggedRobotCfg.init_state ):
