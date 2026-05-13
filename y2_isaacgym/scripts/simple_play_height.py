@@ -112,7 +112,7 @@ def play(args):
     #                                                                               **policy_cfg_dict)
     # print(policy)
     # model_dict = torch.load(os.path.join(ROOT_DIR, 'logs/d1_flat/Nov12_18-27-36_/model_6000.pt'))
-    model_path = os.path.join(ROOT_DIR, 'logs/d1h_slope_height/May09_08-57-11_/model_10000.pt')
+    model_path = os.path.join(ROOT_DIR, 'logs/d1h_slope_height/May12_14-06-59_/model_10000.pt')
     model_dict = torch.load(model_path)
 
     policy.load_state_dict(model_dict['model_state_dict'])
@@ -135,6 +135,10 @@ def play(args):
     robot_mass = sum(p.mass for p in body_props)
     robot_index = 0 # which robot is used for logging
     joint_index = 1 # which joint is used for logging
+    print_interval = 50
+    foot_joint_indices = list(getattr(env, "foot_joint_indices", []))
+    foot_joint_names = [env.dof_names[idx] for idx in foot_joint_indices]
+    print(f"wheel-foot joints: {list(zip(foot_joint_indices, foot_joint_names))}")
     start_state_log = 100 # number of steps before plotting states
     stop_state_log = 600 # number of steps before plotting states
     stop_rew_log = env.max_episode_length + 1 # number of steps before print average episode rewards
@@ -314,6 +318,26 @@ def play(args):
         #     print("before step:", env.commands[0,:3])
         obs, privileged_obs, rewards,costs,dones, infos = env.step(actions)
         obs = apply_manual_commands(obs)
+
+        if foot_joint_indices and i % print_interval == 0:
+            foot_vel = env.dof_vel[robot_index, foot_joint_indices].detach().cpu().numpy()
+            foot_torque = env.torques[robot_index, foot_joint_indices].detach().cpu().numpy()
+            foot_action = actions[robot_index, foot_joint_indices].detach().cpu().numpy()
+            foot_kp = env.p_gains[foot_joint_indices].detach().cpu().numpy()
+            foot_kd = env.d_gains[foot_joint_indices].detach().cpu().numpy()
+            foot_action_torque = foot_kp * env.cfg.control.action_scale * foot_action
+            foot_damping_torque = -foot_kd * foot_vel
+            print(
+                f"[step {i:06d}] "
+                f"cmd=({env.commands[robot_index, 0].item():+.2f}, "
+                f"{env.commands[robot_index, 1].item():+.2f}, "
+                f"{env.commands[robot_index, 2].item():+.2f}) "
+                f"wheel_vel(rad/s)={np.array2string(foot_vel, precision=3, suppress_small=True)} "
+                f"wheel_torque(Nm)={np.array2string(foot_torque, precision=3, suppress_small=True)} "
+                f"wheel_action={np.array2string(foot_action, precision=3, suppress_small=True)} "
+                f"action_tau={np.array2string(foot_action_torque, precision=3, suppress_small=True)} "
+                f"damping_tau={np.array2string(foot_damping_torque, precision=3, suppress_small=True)}"
+            )
 
         env.gym.step_graphics(env.sim) # required to render in headless mode
         env.gym.render_all_camera_sensors(env.sim)

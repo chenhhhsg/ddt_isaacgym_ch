@@ -514,7 +514,7 @@ class ActorCriticBarlowTwins(nn.Module):
 
         # #MlpBarlowTwinsActor
         self.actor_teacher_backbone = MlpBarlowTwinsActor(num_prop=num_prop-3,
-                                      num_hist=num_hist // 2,
+                                      num_hist=5,
                                       num_actions=num_actions,
                                       actor_dims=[512,256,128],
                                       mlp_encoder_dims=[128,64],
