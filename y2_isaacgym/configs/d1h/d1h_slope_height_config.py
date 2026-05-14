@@ -66,8 +66,9 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
         resampling_time = 5.  # time before command are changed[s]
         heading_command = False  # if true: compute ang vel command from heading error
         global_reference = False
-        zero_command_prob = 0.2
         zero_height_cmd_prob = 0.3
+        # Command category proportions: [x, turn, x+turn, stand_still].
+        commands_proportion = [0.4, 0.2, 0.2, 0.2]
         class ranges:
             lin_vel_x = [-1.0, 1.0]  # min max [m/s]
             lin_vel_y = [0.0, 0.0]  # min max [m/s]
@@ -112,7 +113,7 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
             tracking_ang_vel = 8.0
             tracking_height_velocity = 1.0
             lin_vel_z = -2.0
-            orientation = -10.0
+            orientation = -5.0
             ang_vel_xy = -0.05
             dof_thigh_vel = -0.05
             dof_acc = -2.5e-7
@@ -124,8 +125,9 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
             # keep_still = -0.5
             tracking_base_height = 8.0
 
-            stand_still_wheel = -8.0
-            stand_still_base = -8.0
+            stand_still_wheel = -5.0
+            stand_still_base = -5.0
+            wheel_vel_diff = -4.0
 
             # finetune
             collision_head = -5.0
@@ -161,9 +163,9 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
         measure_heights = True
         include_act_obs_pair_buf = False
         # terrain types: [smooth slope, rough slope, stairs up, stairs down, discrete, stepping stones, gap]
-        terrain_proportions = [0.7, 0.3, 0.0, 0.0, 0.0]
+        terrain_proportions = [0.8, 0.2, 0.0, 0.0, 0.0]
         slope_treshold = 1.0  # slopes above this threshold will be corrected to vertical surfaces
-        slope = [0, 0.6]
+        slope = [0, 0.4]
 
     class sim(LeggedRobotCfg.sim):
         dt = 0.0025
@@ -273,6 +275,15 @@ class D1HSlopeHeight(D1HHeightCommand):
         base_yaw_motion = torch.square(self.base_ang_vel[:, 2])
         base_motion = base_lin_motion +  base_yaw_motion
         return cmd_still_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.clamp(base_motion / 0.1, 0.0, 1.0)
+
+    def _reward_wheel_vel_diff(self):
+        cmd_y_zero = (torch.abs(self.commands[:, 1]) < 0.1).float()
+        cmd_yaw_zero = (torch.abs(self.commands[:, 2]) < 0.1).float()
+        cmd_height_zero = (torch.abs(self.commands[:, 4]) < 0.1).float()
+        wheel_diff_gate = cmd_y_zero * cmd_yaw_zero * cmd_height_zero
+        wheel_vel = self.dof_vel[:, self.foot_joint_indices]
+        wheel_vel_diff = torch.square(wheel_vel[:, 0] - wheel_vel[:, 1])
+        return wheel_diff_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.clamp(wheel_vel_diff / 0.25, 0.0, 1.0)
 
     def _reward_no_jump(self):
         contacts = self.contact_forces[:, self.feet_indices, 2] > 10.

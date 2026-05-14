@@ -376,9 +376,69 @@ class D1HHeightCommand(LeggedRobot):
         if len(env_ids) == 0:
             return
 
-        self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        zero_command_mask = torch.rand(len(env_ids), device=self.device) < getattr(self.cfg.commands, "zero_command_prob", 0.0)
+        if not hasattr(self.cfg.commands, "commands_proportion"):
+            self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+            self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+            zero_command_mask = torch.rand(len(env_ids), device=self.device) < getattr(self.cfg.commands, "zero_command_prob", 0.0)
+
+            lin_vel_z_range = self.command_ranges.get("lin_vel_z", self.command_ranges.get("base_height", [-0.1, 0.1]))
+            sampled_vz = torch_rand_float(
+                lin_vel_z_range[0],
+                lin_vel_z_range[1],
+                (len(env_ids), 1),
+                device=self.device,
+            ).squeeze(1)
+            zero_mask = torch.rand(len(env_ids), device=self.device) < self.cfg.commands.zero_height_cmd_prob
+            zero_mask |= zero_command_mask
+            self.commands[env_ids, 4] = torch.where(zero_mask, torch.zeros(len(env_ids), device=self.device), sampled_vz)
+
+            zero_height_ids = env_ids[zero_mask]
+            nonzero_height_ids = env_ids[~zero_mask]
+            if len(zero_height_ids) > 0:
+                self.target_height[zero_height_ids] = torch_rand_float(
+                    self.cfg.rewards.height_target_min,
+                    self.cfg.rewards.height_target_max,
+                    (len(zero_height_ids), 1),
+                    device=self.device,
+                ).squeeze(1)
+            if len(nonzero_height_ids) > 0:
+                self.target_height[nonzero_height_ids] = self.cfg.rewards.base_height_target
+
+            if self.cfg.commands.heading_command:
+                self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+            else:
+                self.commands[env_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+
+            self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+            zero_command_ids = env_ids[zero_command_mask]
+
+            if len(zero_command_ids) > 0:
+                self.commands[zero_command_ids, :3] = 0.0
+                self.commands[zero_command_ids, 4] = 0.0
+                if self.cfg.commands.heading_command:
+                    forward = quat_apply(self.base_quat[zero_command_ids], self.forward_vec[zero_command_ids])
+                    self.commands[zero_command_ids, 3] = torch.atan2(forward[:, 1], forward[:, 0])
+            return
+
+        command_select = torch.rand(len(env_ids), device=self.device)
+        cp = torch.tensor(self.cfg.commands.commands_proportion, device=self.device)
+        cp = cp / torch.clamp(cp.sum(), min=1e-6)
+
+        sel_x = command_select < cp[0]
+        sel_turn = (command_select >= cp[0]) & (command_select < cp[:2].sum())
+        sel_x_turn = (command_select >= cp[:2].sum()) & (command_select < cp[:3].sum())
+
+        self.commands[env_ids, :] = 0.0
+
+        x_ids = torch.cat([env_ids[sel_x], env_ids[sel_x_turn]])
+        ang_ids = torch.cat([env_ids[sel_turn], env_ids[sel_x_turn]])
+
+        self.commands[x_ids, 0] = torch_rand_float(
+            self.command_ranges["lin_vel_x"][0],
+            self.command_ranges["lin_vel_x"][1],
+            (len(x_ids), 1),
+            device=self.device,
+        ).squeeze(1)
 
         lin_vel_z_range = self.command_ranges.get("lin_vel_z", self.command_ranges.get("base_height", [-0.1, 0.1]))
         sampled_vz = torch_rand_float(
@@ -388,7 +448,6 @@ class D1HHeightCommand(LeggedRobot):
             device=self.device,
         ).squeeze(1)
         zero_mask = torch.rand(len(env_ids), device=self.device) < self.cfg.commands.zero_height_cmd_prob
-        zero_mask |= zero_command_mask
         self.commands[env_ids, 4] = torch.where(zero_mask, torch.zeros(len(env_ids), device=self.device), sampled_vz)
 
         zero_height_ids = env_ids[zero_mask]
@@ -404,19 +463,11 @@ class D1HHeightCommand(LeggedRobot):
             self.target_height[nonzero_height_ids] = self.cfg.rewards.base_height_target
 
         if self.cfg.commands.heading_command:
-            self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+            self.commands[ang_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(ang_ids), 1), device=self.device).squeeze(1)
         else:
-            self.commands[env_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+            self.commands[ang_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(ang_ids), 1), device=self.device).squeeze(1)
 
         self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
-        zero_command_ids = env_ids[zero_command_mask]
-        
-        if len(zero_command_ids) > 0:
-            self.commands[zero_command_ids, :3] = 0.0
-            self.commands[zero_command_ids, 4] = 0.0
-            if self.cfg.commands.heading_command:
-                forward = quat_apply(self.base_quat[zero_command_ids], self.forward_vec[zero_command_ids])
-                self.commands[zero_command_ids, 3] = torch.atan2(forward[:, 1], forward[:, 0])
 
     def _update_command_curriculum(self, env_ids):
         """ Implements a curriculum of increasing commands
