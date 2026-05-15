@@ -463,6 +463,12 @@ class D1HHeightCommand(LeggedRobot):
             self.target_height[nonzero_height_ids] = self.cfg.rewards.base_height_target
 
         if self.cfg.commands.heading_command:
+            non_ang_mask = ~(sel_turn | sel_x_turn)
+            non_ang_ids = env_ids[non_ang_mask]
+            if len(non_ang_ids) > 0:
+                forward = quat_apply(self.base_quat[non_ang_ids], self.forward_vec[non_ang_ids])
+                self.commands[non_ang_ids, 3] = torch.atan2(forward[:, 1], forward[:, 0])
+
             self.commands[ang_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(ang_ids), 1), device=self.device).squeeze(1)
         else:
             self.commands[ang_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(ang_ids), 1), device=self.device).squeeze(1)

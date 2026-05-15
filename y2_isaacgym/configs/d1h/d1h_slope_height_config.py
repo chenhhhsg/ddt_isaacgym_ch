@@ -64,7 +64,7 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
         max_curriculum_yaw = 1.0
         num_commands = 5  # lin_vel_x, lin_vel_y, ang_vel_yaw, heading, lin_vel_z
         resampling_time = 5.  # time before command are changed[s]
-        heading_command = False  # if true: compute ang vel command from heading error
+        heading_command = True  # if true: compute ang vel command from heading error
         global_reference = False
         zero_height_cmd_prob = 0.3
         # Command category proportions: [x, turn, x+turn, stand_still].
@@ -132,11 +132,11 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
             # finetune
             collision_head = -5.0
             body_pos_to_feet_x = 0.5
-            body_feet_distance_x = -0.2
-            body_feet_distance_y = -1.0
+            body_feet_distance_x = -1.0
+            body_feet_distance_y = -3.0
             body_symmetry_y = 0.1
             body_symmetry_z = 0.3
-            no_jump = -2.0
+            no_jump = -1.0
             collision_hard = -10.0
         
 
@@ -283,7 +283,7 @@ class D1HSlopeHeight(D1HHeightCommand):
         wheel_diff_gate = cmd_y_zero * cmd_yaw_zero * cmd_height_zero
         wheel_vel = self.dof_vel[:, self.foot_joint_indices]
         wheel_vel_diff = torch.square(wheel_vel[:, 0] - wheel_vel[:, 1])
-        return wheel_diff_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.clamp(wheel_vel_diff / 0.25, 0.0, 1.0)
+        return wheel_diff_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.clamp(wheel_vel_diff / 0.1, 0.0, 1.0)
 
     def _reward_no_jump(self):
         contacts = self.contact_forces[:, self.feet_indices, 2] > 10.
