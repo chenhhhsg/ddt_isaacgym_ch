@@ -427,11 +427,13 @@ class D1HHeightCommand(LeggedRobot):
         sel_x = command_select < cp[0]
         sel_turn = (command_select >= cp[0]) & (command_select < cp[:2].sum())
         sel_x_turn = (command_select >= cp[:2].sum()) & (command_select < cp[:3].sum())
+        sel_stand = ~(sel_x | sel_turn | sel_x_turn)
 
         self.commands[env_ids, :] = 0.0
 
         x_ids = torch.cat([env_ids[sel_x], env_ids[sel_x_turn]])
         ang_ids = torch.cat([env_ids[sel_turn], env_ids[sel_x_turn]])
+        motion_ids = env_ids[~sel_stand]
 
         self.commands[x_ids, 0] = torch_rand_float(
             self.command_ranges["lin_vel_x"][0],
@@ -440,27 +442,28 @@ class D1HHeightCommand(LeggedRobot):
             device=self.device,
         ).squeeze(1)
 
-        lin_vel_z_range = self.command_ranges.get("lin_vel_z", self.command_ranges.get("base_height", [-0.1, 0.1]))
-        sampled_vz = torch_rand_float(
-            lin_vel_z_range[0],
-            lin_vel_z_range[1],
-            (len(env_ids), 1),
-            device=self.device,
-        ).squeeze(1)
-        zero_mask = torch.rand(len(env_ids), device=self.device) < self.cfg.commands.zero_height_cmd_prob
-        self.commands[env_ids, 4] = torch.where(zero_mask, torch.zeros(len(env_ids), device=self.device), sampled_vz)
-
-        zero_height_ids = env_ids[zero_mask]
-        nonzero_height_ids = env_ids[~zero_mask]
-        if len(zero_height_ids) > 0:
-            self.target_height[zero_height_ids] = torch_rand_float(
-                self.cfg.rewards.height_target_min,
-                self.cfg.rewards.height_target_max,
-                (len(zero_height_ids), 1),
+        if len(motion_ids) > 0:
+            lin_vel_z_range = self.command_ranges.get("lin_vel_z", self.command_ranges.get("base_height", [-0.1, 0.1]))
+            sampled_vz = torch_rand_float(
+                lin_vel_z_range[0],
+                lin_vel_z_range[1],
+                (len(motion_ids), 1),
                 device=self.device,
             ).squeeze(1)
-        if len(nonzero_height_ids) > 0:
-            self.target_height[nonzero_height_ids] = self.cfg.rewards.base_height_target
+            zero_mask = torch.rand(len(motion_ids), device=self.device) < self.cfg.commands.zero_height_cmd_prob
+            self.commands[motion_ids, 4] = torch.where(zero_mask, torch.zeros(len(motion_ids), device=self.device), sampled_vz)
+
+            zero_height_ids = motion_ids[zero_mask]
+            nonzero_height_ids = motion_ids[~zero_mask]
+            if len(zero_height_ids) > 0:
+                self.target_height[zero_height_ids] = torch_rand_float(
+                    self.cfg.rewards.height_target_min,
+                    self.cfg.rewards.height_target_max,
+                    (len(zero_height_ids), 1),
+                    device=self.device,
+                ).squeeze(1)
+            if len(nonzero_height_ids) > 0:
+                self.target_height[nonzero_height_ids] = self.cfg.rewards.base_height_target
 
         if self.cfg.commands.heading_command:
             non_ang_mask = ~(sel_turn | sel_x_turn)
