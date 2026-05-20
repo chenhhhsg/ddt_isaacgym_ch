@@ -14,7 +14,7 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
     class env(LeggedRobotCfg.env):
         num_envs = 4096
         n_scan = 187
-        n_priv_latent =  2 + 1 + 4 + 1 + 1 + 8 + 8 + 8
+        n_priv_latent =  1 + 2 + 1 + 4 + 1 + 1 + 8 + 8 + 8 # 34
         n_proprio = 37 # 3+3+3+4+8+8+8
         history_len = 10
         num_observations = n_proprio + n_scan + history_len*n_proprio + n_priv_latent
@@ -66,8 +66,10 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
         resampling_time = 5.  # time before command are changed[s]
         heading_command = False  # if true: compute ang vel command from heading error
         global_reference = False
-        zero_height_cmd_prob = 0.3
-        # Command category proportions: [x, turn, x+turn, stand_still].
+        height_goal_prob = 0.3
+        height_goal_kp = 1.0
+        height_goal_tolerance = 0.02
+        # Command category proportions: [x_only, x+yaw, yaw_only, stand_still].
         commands_proportion = [0.4, 0.2, 0.2, 0.2]
         class ranges:
             lin_vel_x = [-1.0, 1.0]  # min max [m/s]
@@ -100,6 +102,10 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
         base_height_target = 0.45
         height_target_min = 0.25
         height_target_max = 0.5
+        stand_height_tolerance = 0.03
+        height_change_vz_threshold = 0.01
+        height_change_xdist_sigma = 0.02
+        head_feet_x_dist_target = 0.0
         max_contact_force = 500.  # forces above this value are penalized
 
         class scales( LeggedRobotCfg.rewards.scales ):
@@ -163,7 +169,7 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
         measure_heights = True
         include_act_obs_pair_buf = False
         # terrain types: [smooth slope, rough slope, stairs up, stairs down, discrete, stepping stones, gap]
-        terrain_proportions = [0.8, 0.2, 0.0, 0.0, 0.0]
+        terrain_proportions = [1.0, 0.0, 0.0, 0.0, 0.0]
         slope_treshold = 1.0  # slopes above this threshold will be corrected to vertical surfaces
         slope = [0, 0.4]
 
@@ -216,9 +222,14 @@ class D1HSlopeHeight(D1HHeightCommand):
 
     ## 使用stand_still_vel + base_height 设置默认高度 or stand_still 设置
     def _reward_lin_vel_z(self):
-        # 惩罚没有高度命令时的速度
-        height_cmd_gate = (torch.abs(self.commands[:, 4]) < 0.02).float()
-        return height_cmd_gate * torch.square(self.base_lin_vel[:, 2])
+        # Penalize z axis base linear velocity; gate off when actively tracking height
+        if self.cfg.commands.num_commands >= 5:
+            actual_vz = torch.abs(self.base_height - self.last_base_height) / self.dt
+            # Hard gate: no vertical-velocity penalty while base height is changing (height tracking).
+            mask = (actual_vz < 1e-2).float()
+        else:
+            mask = 1.0
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 0.7) / 0.7 * mask * torch.square(self.base_lin_vel[:, 2])
     
     def _reward_tracking_lin_vel_x(self):
         # Tracking of linear velocity commands (x axis)
@@ -226,7 +237,7 @@ class D1HSlopeHeight(D1HHeightCommand):
         base_height_sigma = 0.8 + 0.2 * torch.exp(-base_height_error / self.cfg.rewards.tracking_height_sigma)
         lin_vel_x_error = torch.clamp(torch.square(self.commands[:, 0] - self.base_lin_vel[:, 0]), 0, 1)
         tracking_sigma = self.cfg.rewards.tracking_sigma * (0.1+torch.abs(self.commands[:, 0]))/(0.25+torch.abs(self.commands[:, 0]))
-        reward = torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-lin_vel_x_error/tracking_sigma) * base_height_sigma
+        reward = torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-lin_vel_x_error/0.2) * base_height_sigma
         return reward
     
     def _reward_tracking_lin_vel_y(self):
@@ -235,7 +246,7 @@ class D1HSlopeHeight(D1HHeightCommand):
         base_height_sigma = 0.8 + 0.2 * torch.exp(-base_height_error / self.cfg.rewards.tracking_height_sigma)
         lin_vel_y_error = torch.clamp(torch.square(self.commands[:, 1] - self.base_lin_vel[:, 1]), 0, 1)
         tracking_sigma = self.cfg.rewards.tracking_sigma * (0.1+torch.abs(self.commands[:, 1]))/(0.25+torch.abs(self.commands[:, 1]))
-        reward = torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-lin_vel_y_error/tracking_sigma) * base_height_sigma
+        reward = torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-lin_vel_y_error/0.2) * base_height_sigma
         return reward
 
     def _reward_tracking_ang_vel(self):
@@ -244,7 +255,7 @@ class D1HSlopeHeight(D1HHeightCommand):
         base_height_sigma = 0.8 + 0.2 * torch.exp(-base_height_error / self.cfg.rewards.tracking_height_sigma)
         ang_vel_error = torch.square(self.commands[:, 2] - self.base_ang_vel[:, 2])
         tracking_sigma = self.cfg.rewards.tracking_sigma * (0.1+torch.abs(self.commands[:, 2]))/(0.25+torch.abs(self.commands[:, 2]))
-        return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-ang_vel_error/tracking_sigma) * base_height_sigma
+        return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.exp(-ang_vel_error/0.2) * base_height_sigma
     
     def _reward_tracking_base_height(self):
         base_height_error = torch.clamp(torch.square(self._get_base_heights() - self.target_height), 0, 1)
@@ -258,19 +269,29 @@ class D1HSlopeHeight(D1HHeightCommand):
         return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp( -height_vel_error / 1e-4)
 
     def _reward_stand_still_wheel(self):
-        cmd_still_xy = ((torch.norm(self.commands[:, :2], dim=1) < 0.1)).float()
+        cmd_still_xy = getattr(self, "is_stand_cmd", torch.norm(self.commands[:, :2], dim=1) < 0.1).float()
         cmd_still_yaw = (torch.abs(self.commands[:, 2]) < 0.1).float()
+        height_tol = getattr(self.cfg.commands, "height_goal_tolerance", 0.02)
+        height_hold = (
+            (torch.abs(self.height_goal - self.target_height) < height_tol)
+            & (torch.abs(self.target_height - self.last_target_height) < height_tol)
+        ).float()
         cmd_still_height = (torch.abs(self.commands[:, 4]) < 0.02).float()
-        cmd_still_gate = cmd_still_xy * cmd_still_yaw * cmd_still_height
+        cmd_still_gate = cmd_still_xy * height_hold * cmd_still_height * cmd_still_yaw
         wheel_vel = torch.sum(torch.square(self.dof_vel[:, self.foot_joint_indices]), dim=1)
-        return cmd_still_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.clamp(wheel_vel / 0.1, 0.0, 1.0)
+        return cmd_still_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.clamp(wheel_vel / 0.5, 0.0, 1.0)
 
     def _reward_stand_still_base(self):
         # 惩罚无命令下滑动
-        cmd_still_xy = ((torch.norm(self.commands[:, :2], dim=1) < 0.1)).float()
+        cmd_still_xy = getattr(self, "is_stand_cmd", torch.norm(self.commands[:, :2], dim=1) < 0.1).float()
         cmd_still_yaw = (torch.abs(self.commands[:, 2]) < 0.1).float()
+        height_tol = getattr(self.cfg.commands, "height_goal_tolerance", 0.02)
+        height_hold = (
+            (torch.abs(self.height_goal - self.target_height) < height_tol)
+            & (torch.abs(self.target_height - self.last_target_height) < height_tol)
+        ).float()
         cmd_still_height = (torch.abs(self.commands[:, 4]) < 0.02).float()
-        cmd_still_gate = cmd_still_xy * cmd_still_yaw * cmd_still_height
+        cmd_still_gate = cmd_still_xy * height_hold * cmd_still_height * cmd_still_yaw
         base_lin_motion = torch.sum(torch.square(self.base_lin_vel[:, :2]), dim=1)
         base_yaw_motion = torch.square(self.base_ang_vel[:, 2])
         base_motion = base_lin_motion +  base_yaw_motion

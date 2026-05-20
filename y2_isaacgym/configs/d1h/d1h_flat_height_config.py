@@ -14,7 +14,7 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
     class env(LeggedRobotCfg.env):
         num_envs = 4096
         n_scan = 187
-        n_priv_latent =  2 + 1 + 4 + 1 + 1 + 8 + 8 + 8
+        n_priv_latent =  1 + 2 + 1 + 4 + 1 + 1 + 8 + 8 + 8
         n_proprio = 37 # 3+3+3+4+8+8+8
         history_len = 10
         num_observations = n_proprio + n_scan + history_len*n_proprio + n_priv_latent
