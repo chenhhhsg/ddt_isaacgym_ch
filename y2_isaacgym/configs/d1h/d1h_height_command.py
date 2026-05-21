@@ -34,6 +34,7 @@ class D1HHeightCommand(LeggedRobot):
         self.height_goal = self.target_height.clone()
         self.base_height = self.target_height.clone()
         self.last_base_height = self.base_height.clone()
+        self.is_stand_cmd = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
     
     def _create_envs(self):
         """ Creates environments:
@@ -422,6 +423,7 @@ class D1HHeightCommand(LeggedRobot):
         sel_stand = ~(sel_x | sel_x_yaw | sel_yaw)
 
         self.commands[env_ids, :] = 0.0
+        self.is_stand_cmd[env_ids] = sel_stand
 
         x_ids = torch.cat([env_ids[sel_x], env_ids[sel_x_yaw]])
         ang_ids = torch.cat([env_ids[sel_yaw], env_ids[sel_x_yaw]])

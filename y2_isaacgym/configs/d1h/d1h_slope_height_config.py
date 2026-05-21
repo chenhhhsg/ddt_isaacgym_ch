@@ -115,11 +115,11 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
             tracking_lin_vel = 0.0
             feet_air_time = 0.0
             tracking_lin_vel_x = 15.0
-            tracking_lin_vel_y = 10.0
+            tracking_lin_vel_y = 1.0
             tracking_ang_vel = 8.0
             tracking_height_velocity = 1.0
             lin_vel_z = -0.0
-            orientation = -5.0
+            orientation = -3.0
             ang_vel_xy = -0.05
             dof_thigh_vel = -0.05
             dof_acc = -2.5e-7
@@ -266,42 +266,27 @@ class D1HSlopeHeight(D1HHeightCommand):
         # 辅助跟踪速度奖励函数
         lin_vel_z_cmd = (self.target_height - self.last_target_height) / self.dt
         height_vel_error = torch.square(lin_vel_z_cmd - self.base_lin_vel[:, 2])
-        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp( -height_vel_error / 1e-4)
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp( -height_vel_error / 1e-2)
 
     def _reward_stand_still_wheel(self):
-        cmd_still_xy = getattr(self, "is_stand_cmd", torch.norm(self.commands[:, :2], dim=1) < 0.1).float()
-        cmd_still_yaw = (torch.abs(self.commands[:, 2]) < 0.1).float()
-        height_tol = getattr(self.cfg.commands, "height_goal_tolerance", 0.02)
-        height_hold = (
-            (torch.abs(self.height_goal - self.target_height) < height_tol)
-            & (torch.abs(self.target_height - self.last_target_height) < height_tol)
-        ).float()
-        cmd_still_height = (torch.abs(self.commands[:, 4]) < 0.02).float()
-        cmd_still_gate = cmd_still_xy * height_hold * cmd_still_height * cmd_still_yaw
+        cmd_still = self.is_stand_cmd.float()
+        cmd_still_gate = cmd_still
         wheel_vel = torch.sum(torch.square(self.dof_vel[:, self.foot_joint_indices]), dim=1)
-        return cmd_still_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.clamp(wheel_vel / 0.5, 0.0, 1.0)
+        return cmd_still_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * wheel_vel / 0.1
 
     def _reward_stand_still_base(self):
         # 惩罚无命令下滑动
-        cmd_still_xy = getattr(self, "is_stand_cmd", torch.norm(self.commands[:, :2], dim=1) < 0.1).float()
-        cmd_still_yaw = (torch.abs(self.commands[:, 2]) < 0.1).float()
-        height_tol = getattr(self.cfg.commands, "height_goal_tolerance", 0.02)
-        height_hold = (
-            (torch.abs(self.height_goal - self.target_height) < height_tol)
-            & (torch.abs(self.target_height - self.last_target_height) < height_tol)
-        ).float()
-        cmd_still_height = (torch.abs(self.commands[:, 4]) < 0.02).float()
-        cmd_still_gate = cmd_still_xy * height_hold * cmd_still_height * cmd_still_yaw
+        cmd_still = self.is_stand_cmd.float()
+        cmd_still_gate = cmd_still
         base_lin_motion = torch.sum(torch.square(self.base_lin_vel[:, :2]), dim=1)
         base_yaw_motion = torch.square(self.base_ang_vel[:, 2])
         base_motion = base_lin_motion +  base_yaw_motion
-        return cmd_still_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.clamp(base_motion / 0.1, 0.0, 1.0)
+        return cmd_still_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * base_motion / 0.1
 
     def _reward_wheel_vel_diff(self):
-        cmd_y_zero = (torch.abs(self.commands[:, 1]) < 0.1).float()
         cmd_yaw_zero = (torch.abs(self.commands[:, 2]) < 0.1).float()
         cmd_height_zero = (torch.abs(self.commands[:, 4]) < 0.02).float()
-        wheel_diff_gate = cmd_y_zero * cmd_yaw_zero * cmd_height_zero
+        wheel_diff_gate = cmd_yaw_zero * cmd_height_zero
         wheel_vel = self.dof_vel[:, self.foot_joint_indices]
         wheel_vel_diff = torch.square(wheel_vel[:, 0] - wheel_vel[:, 1])
         return wheel_diff_gate * torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.clamp(wheel_vel_diff / 0.1, 0.0, 1.0)
