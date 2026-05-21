@@ -281,6 +281,7 @@ class D1HHeightCommand(LeggedRobot):
         torques *= self.motor_strength
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
+
     def compute_observations(self):
         # 3 + 3 + 3 + 4 + 8 + 8 + 8 = 37
         cmd_height = self.target_height - self.cfg.rewards.base_height_target
@@ -446,6 +447,7 @@ class D1HHeightCommand(LeggedRobot):
 
         if self.cfg.commands.num_commands >= 5:
             height_goal_mask = torch.rand(len(env_ids), device=self.device) < getattr(self.cfg.commands, "height_goal_prob", 0.3)
+            height_goal_mask = height_goal_mask & ~sel_stand  # stand_still envs keep current height
             height_goal_ids = env_ids[height_goal_mask]
             hold_height_ids = env_ids[~height_goal_mask]
             if len(height_goal_ids) > 0:
@@ -456,7 +458,7 @@ class D1HHeightCommand(LeggedRobot):
             if len(hold_height_ids) > 0:
                 self.height_goal[hold_height_ids] = self.target_height[hold_height_ids]
 
-        self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+        self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.1).unsqueeze(1)
 
     def _update_command_curriculum(self, env_ids):
         """ Implements a curriculum of increasing commands
