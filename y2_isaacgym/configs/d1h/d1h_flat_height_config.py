@@ -97,8 +97,8 @@ class D1HFlatHeightCfg( LeggedRobotCfg ):
         soft_dof_vel_limit = 0.9
         soft_torque_limit = 0.9
         base_height_target = 0.45
-        height_target_min = 0.25
-        height_target_max = 0.5
+        height_target_min = 0.30
+        height_target_max = 0.55
         max_contact_force = 500.  # forces above this value are penalized
 
         class scales( LeggedRobotCfg.rewards.scales ):

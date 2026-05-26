@@ -32,9 +32,6 @@ class D1HHeightCommand(LeggedRobot):
         self.target_height = torch.full((self.num_envs,), h0, device=self.device, dtype=torch.float)
         self.last_target_height = self.target_height.clone()
         self.height_goal = self.target_height.clone()
-        self.base_height = self.target_height.clone()
-        self.last_base_height = self.base_height.clone()
-        self.is_stand_cmd = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
     
     def _create_envs(self):
         """ Creates environments:
@@ -185,8 +182,8 @@ class D1HHeightCommand(LeggedRobot):
             self.root_states[env_ids] = self.base_init_state
             self.root_states[env_ids, :3] += self.env_origins[env_ids]
         # base rotation
-        random_roll = torch_rand_float(-0.15, 0.15, (len(env_ids),1), device=self.device).squeeze(1)
-        random_pitch = torch_rand_float(-0.15, 0.15, (len(env_ids),1), device=self.device).squeeze(1)
+        random_roll = torch_rand_float(-np.pi, np.pi, (len(env_ids),1), device=self.device).squeeze(1)
+        random_pitch = torch_rand_float(-np.pi, np.pi, (len(env_ids),1), device=self.device).squeeze(1)
         random_yaw = torch_rand_float(-np.pi, np.pi, (len(env_ids),1), device=self.device).squeeze(1)
         self.root_states[env_ids, 3:7] = quat_from_euler_xyz(random_roll, random_pitch, random_yaw)
         # base velocities
@@ -194,8 +191,6 @@ class D1HHeightCommand(LeggedRobot):
         self.target_height[env_ids] = self.cfg.rewards.base_height_target
         self.last_target_height[env_ids] = self.cfg.rewards.base_height_target
         self.height_goal[env_ids] = self.cfg.rewards.base_height_target
-        self.base_height[env_ids] = self.cfg.rewards.base_height_target
-        self.last_base_height[env_ids] = self.cfg.rewards.base_height_target
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
@@ -284,14 +279,14 @@ class D1HHeightCommand(LeggedRobot):
 
     def compute_observations(self):
         # 3 + 3 + 3 + 4 + 8 + 8 + 8 = 37
-        cmd_height = self.target_height - self.cfg.rewards.base_height_target
+        cmd_height = (self.height_goal - self._get_base_heights()) * self.obs_scales.height_obs_scale
         command_obs = torch.cat((
             self.commands[:, :3] * self.commands_scale[:3],
             cmd_height.unsqueeze(-1) * self.commands_scale[3],
         ), dim=-1)
 
         obs_buf = torch.cat((
-            self.base_lin_vel * self.obs_scales.lin_vel,
+            self.base_lin_vel * self.obs_scales.lin_vel, 
             self.base_ang_vel * self.obs_scales.ang_vel,
             self.projected_gravity,
             command_obs,
@@ -316,7 +311,6 @@ class D1HHeightCommand(LeggedRobot):
             obs_buf += (2 * torch.rand_like(obs_buf) - 1) * noise_vec.to(self.device)
 
         priv_latent = torch.cat((
-            self.target_height.unsqueeze(-1),
             self.contact_filt.float() - 0.5,
             self.randomized_lag_tensor,
             self.mass_params_tensor,
@@ -328,7 +322,7 @@ class D1HHeightCommand(LeggedRobot):
         ), dim=-1)
 
         if self.cfg.terrain.measure_heights:
-            heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - self.target_height.unsqueeze(1) - self.measured_heights, -1, 1.) * self.obs_scales.height_measurements
+            heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights, -1, 1.) * self.obs_scales.height_measurements
             self.obs_buf = torch.cat([obs_buf, heights, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
         else:
             self.obs_buf = torch.cat([obs_buf, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
@@ -370,34 +364,13 @@ class D1HHeightCommand(LeggedRobot):
             self.feet_heights = self._get_feet_heights()
             self.feet_body_frame_height = self._get_feet_local_heights()
 
-        self.last_base_height = self.base_height.clone()
-        self.base_height = self._get_base_heights()
-
         if self.cfg.domain_rand.push_robots and (self.common_step_counter % self.cfg.domain_rand.push_interval == 0):
             self._push_robots()
 
         if self.cfg.domain_rand.disturbance and (self.common_step_counter % self.cfg.domain_rand.disturbance_interval == 0):
             self._disturbance_robots()
 
-        if self.cfg.commands.num_commands >= 5:
-            height_error = self.height_goal - self.target_height
-            lin_vel_z_range = self.command_ranges.get("lin_vel_z", [-0.1, 0.1])
-            height_kp = getattr(self.cfg.commands, "height_goal_kp", 1.0)
-            height_tol = getattr(self.cfg.commands, "height_goal_tolerance", 0.02)
-            height_cmd = torch.clip(height_kp * height_error, lin_vel_z_range[0], lin_vel_z_range[1])
-            next_target_height = torch.clamp(
-                self.target_height + height_cmd * self.dt,
-                self.cfg.rewards.height_target_min,
-                self.cfg.rewards.height_target_max,
-            )
-            goal_error_next = self.height_goal - next_target_height
-            reached_goal = (torch.abs(height_error) < height_tol) | (height_error * goal_error_next <= 0.0)
-            final_height_cmd = torch.clamp(
-                (self.height_goal - self.target_height) / self.dt,
-                lin_vel_z_range[0],
-                lin_vel_z_range[1],
-            )
-            self.commands[:, 4] = torch.where(reached_goal, final_height_cmd, height_cmd)
+        self._update_height_command()
 
         self.last_target_height = self.target_height.clone()
         self.target_height = torch.clamp(
@@ -405,9 +378,14 @@ class D1HHeightCommand(LeggedRobot):
             self.cfg.rewards.height_target_min,
             self.cfg.rewards.height_target_max,
         )
-        reached_after_update = torch.abs(self.height_goal - self.target_height) < getattr(self.cfg.commands, "height_goal_tolerance", 0.02)
-        self.height_goal = torch.where(reached_after_update, self.target_height, self.height_goal)
-        self.commands[:, 4] = torch.where(reached_after_update, torch.zeros_like(self.commands[:, 4]), self.commands[:, 4])
+
+    def _update_height_command(self):
+        """P controller: generate vz command from height_goal - target_height error."""
+        if self.cfg.commands.num_commands >= 5:
+            height_kp = getattr(self.cfg.commands, "height_goal_kp", 1.0)
+            height_error = self.height_goal - self.target_height
+            lin_vel_z_range = self.command_ranges.get("lin_vel_z", [-0.1, 0.1])
+            self.commands[:, 4] = torch.clip(height_kp * height_error, lin_vel_z_range[0], lin_vel_z_range[1])
 
     def _resample_commands(self, env_ids):
         if len(env_ids) == 0:
@@ -424,7 +402,6 @@ class D1HHeightCommand(LeggedRobot):
         sel_stand = ~(sel_x | sel_x_yaw | sel_yaw)
 
         self.commands[env_ids, :] = 0.0
-        self.is_stand_cmd[env_ids] = sel_stand
 
         x_ids = torch.cat([env_ids[sel_x], env_ids[sel_x_yaw]])
         ang_ids = torch.cat([env_ids[sel_yaw], env_ids[sel_x_yaw]])
@@ -447,7 +424,6 @@ class D1HHeightCommand(LeggedRobot):
 
         if self.cfg.commands.num_commands >= 5:
             height_goal_mask = torch.rand(len(env_ids), device=self.device) < getattr(self.cfg.commands, "height_goal_prob", 0.3)
-            height_goal_mask = height_goal_mask & ~sel_stand  # stand_still envs keep current height
             height_goal_ids = env_ids[height_goal_mask]
             hold_height_ids = env_ids[~height_goal_mask]
             if len(height_goal_ids) > 0:
@@ -458,7 +434,7 @@ class D1HHeightCommand(LeggedRobot):
             if len(hold_height_ids) > 0:
                 self.height_goal[hold_height_ids] = self.target_height[hold_height_ids]
 
-        self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.1).unsqueeze(1)
+        self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
 
     def _update_command_curriculum(self, env_ids):
         """ Implements a curriculum of increasing commands

@@ -112,7 +112,7 @@ def play(args):
     #                                                                               **policy_cfg_dict)
     # print(policy)
     # model_dict = torch.load(os.path.join(ROOT_DIR, 'logs/d1_flat/Nov12_18-27-36_/model_6000.pt'))
-    model_path = os.path.join(ROOT_DIR, 'logs/d1h_slope_height/May21_08-26-10_/model_10000.pt')
+    model_path = os.path.join(ROOT_DIR, 'logs/d1h_slope_height/May22_02-41-36_/model_3000.pt')
     model_dict = torch.load(model_path)
 
     policy.load_state_dict(model_dict['model_state_dict'])
@@ -138,6 +138,7 @@ def play(args):
     print_interval = 50
     foot_joint_indices = list(getattr(env, "foot_joint_indices", []))
     foot_joint_names = [env.dof_names[idx] for idx in foot_joint_indices]
+    logger.set_wheel_joint_names(foot_joint_names)
     print(f"wheel-foot joints: {list(zip(foot_joint_indices, foot_joint_names))}")
     start_state_log = 100 # number of steps before plotting states
     stop_state_log = 600 # number of steps before plotting states
@@ -180,11 +181,11 @@ def play(args):
         height_vel_min, height_vel_max = env_cfg.commands.ranges.lin_vel_z
         height_min = getattr(env_cfg.rewards, "height_target_min", None)
         height_max = getattr(env_cfg.rewards, "height_target_max", None)
-        print(
-            f"height velocity command enabled: "
-            f"vel_range=({height_vel_min:.3f}, {height_vel_max:.3f}), "
-            f"target_range=({height_min:.3f}, {height_max:.3f})"
-        )
+        # print(
+        #     f"height velocity command enabled: "
+        #     f"vel_range=({height_vel_min:.3f}, {height_vel_max:.3f}), "
+        #     f"target_range=({height_min:.3f}, {height_max:.3f})"
+        # )
     else:
         has_height_command = False
         height_vel_min = None
@@ -398,6 +399,8 @@ def play(args):
                         'command_height_vel': env.commands[robot_index, 4].item() if has_height_command else 0.0,
                         'torques': env.torques[robot_index, :].tolist(),
                         'velocities': env.dof_vel[robot_index, :].tolist(),
+                        'wheel_actions': actions[robot_index, foot_joint_indices].detach().cpu().tolist() if foot_joint_indices else [],
+                        'wheel_torques': env.torques[robot_index, foot_joint_indices].detach().cpu().tolist() if foot_joint_indices else [],
                         'wheel_left_vel': left_wheel_lin,
                         'wheel_right_vel': right_wheel_lin,
                         'wheel_diff_vel': wheel_diff_lin,
@@ -416,6 +419,6 @@ def play(args):
 
 if __name__ == '__main__':
     RECORD_FRAMES = False
-    PLOT_STATES = False
+    PLOT_STATES = True
     args = get_args()
     play(args)

@@ -15,6 +15,7 @@ class Logger:
         self.num_episodes = 0
         self.plot_process = None
         self.joint_names = None
+        self.wheel_joint_names = None
 
     def log_state(self, key, value):
         self.state_log[key].append(value)
@@ -24,10 +25,16 @@ class Logger:
             if key == "joint_names":
                 self.joint_names = list(value)
                 continue
+            if key == "wheel_joint_names":
+                self.wheel_joint_names = list(value)
+                continue
             self.log_state(key, value)
 
     def set_joint_names(self, joint_names):
         self.joint_names = list(joint_names)
+
+    def set_wheel_joint_names(self, wheel_joint_names):
+        self.wheel_joint_names = list(wheel_joint_names)
 
     def log_rewards(self, dict, num_episodes):
         for key, value in dict.items():
@@ -172,6 +179,7 @@ class Logger:
         fig3 = None
         fig4 = None
         fig5 = None
+        fig6 = None
         if log["torques"]:
             num_joints = len(log["torques"][0])
             rows, cols = 3, 4
@@ -309,6 +317,34 @@ class Logger:
             if lines5:
                 ax5.legend(lines5, labels5, loc='best')
             fig5.tight_layout()
+        if log["wheel_actions"] or log["wheel_torques"]:
+            wheel_actions = np.array(log["wheel_actions"], dtype=float) if log["wheel_actions"] else np.array([])
+            wheel_torques = np.array(log["wheel_torques"], dtype=float) if log["wheel_torques"] else np.array([])
+            num_wheels = 0
+            if wheel_actions.ndim == 2:
+                num_wheels = max(num_wheels, wheel_actions.shape[1])
+            if wheel_torques.ndim == 2:
+                num_wheels = max(num_wheels, wheel_torques.shape[1])
+            if num_wheels:
+                fig6, axs6 = plt.subplots(num_wheels, 1, figsize=(10, max(3, 2.5 * num_wheels)), sharex=True)
+                axs6 = np.atleast_1d(axs6)
+                for wheel_idx in range(num_wheels):
+                    a = axs6[wheel_idx]
+                    if self.wheel_joint_names and wheel_idx < len(self.wheel_joint_names):
+                        title_name = self.wheel_joint_names[wheel_idx]
+                    else:
+                        title_name = f'Wheel joint {wheel_idx}'
+                    if wheel_actions.ndim == 2 and wheel_idx < wheel_actions.shape[1]:
+                        a.plot(time[:wheel_actions.shape[0]], wheel_actions[:, wheel_idx], label='action')
+                    if wheel_torques.ndim == 2 and wheel_idx < wheel_torques.shape[1]:
+                        a2 = a.twinx()
+                        a2.plot(time[:wheel_torques.shape[0]], wheel_torques[:, wheel_idx], 'r--', label='torque')
+                        a2.set_ylabel('Torque [Nm]', color='r')
+                        a2.legend(loc='upper right')
+                    a.set(ylabel='Action', title=title_name)
+                    a.legend(loc='upper left')
+                axs6[-1].set_xlabel('time [s]')
+                fig6.tight_layout()
         if save_path:
             fig.savefig(save_path, dpi=150)
             if fig2 is not None:
@@ -323,6 +359,9 @@ class Logger:
             if fig5 is not None:
                 base, ext = os.path.splitext(save_path)
                 fig5.savefig(f"{base}_base_height{ext}", dpi=150)
+            if fig6 is not None:
+                base, ext = os.path.splitext(save_path)
+                fig6.savefig(f"{base}_wheel_actions_torques{ext}", dpi=150)
             print(f"Saved plot to {save_path}")
             return
         plt.show()
