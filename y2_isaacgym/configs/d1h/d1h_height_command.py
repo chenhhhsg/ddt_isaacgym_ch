@@ -14,7 +14,7 @@ from utils.math import wrap_to_pi
 class D1HHeightCommand(LeggedRobot):
     def _init_buffers(self):
         super()._init_buffers()
-        height_cmd_scale = getattr(self.obs_scales, "lin_vel_z_cmd", self.obs_scales.height_measurements)
+        height_cmd_scale = getattr(self.obs_scales, "height_cmd_scale", 5.0)
         self.commands_scale = torch.tensor(
             [
                 self.obs_scales.lin_vel,
@@ -31,8 +31,9 @@ class D1HHeightCommand(LeggedRobot):
         h0 = float(self.cfg.rewards.base_height_target)
         self.target_height = torch.full((self.num_envs,), h0, device=self.device, dtype=torch.float)
         self.last_target_height = self.target_height.clone()
-        self.height_goal = self.target_height.clone()
-    
+        self.base_height = torch.full((self.num_envs,), h0, device=self.device, dtype=torch.float)
+        self.last_base_height = self.base_height.clone()
+
     def _create_envs(self):
         """ Creates environments:
              1. loads the robot URDF/MJCF asset,
@@ -182,15 +183,14 @@ class D1HHeightCommand(LeggedRobot):
             self.root_states[env_ids] = self.base_init_state
             self.root_states[env_ids, :3] += self.env_origins[env_ids]
         # base rotation
-        random_roll = torch_rand_float(-np.pi, np.pi, (len(env_ids),1), device=self.device).squeeze(1)
-        random_pitch = torch_rand_float(-np.pi, np.pi, (len(env_ids),1), device=self.device).squeeze(1)
+        random_roll = torch_rand_float(-0.15, 0.15, (len(env_ids),1), device=self.device).squeeze(1)
+        random_pitch = torch_rand_float(-0.15, 0.15, (len(env_ids),1), device=self.device).squeeze(1)
         random_yaw = torch_rand_float(-np.pi, np.pi, (len(env_ids),1), device=self.device).squeeze(1)
         self.root_states[env_ids, 3:7] = quat_from_euler_xyz(random_roll, random_pitch, random_yaw)
         # base velocities
         self.root_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
         self.target_height[env_ids] = self.cfg.rewards.base_height_target
         self.last_target_height[env_ids] = self.cfg.rewards.base_height_target
-        self.height_goal[env_ids] = self.cfg.rewards.base_height_target
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
@@ -279,7 +279,7 @@ class D1HHeightCommand(LeggedRobot):
 
     def compute_observations(self):
         # 3 + 3 + 3 + 4 + 8 + 8 + 8 = 37
-        cmd_height = (self.height_goal - self._get_base_heights()) * self.obs_scales.height_obs_scale
+        cmd_height = self.target_height - self.cfg.rewards.base_height_target
         command_obs = torch.cat((
             self.commands[:, :3] * self.commands_scale[:3],
             cmd_height.unsqueeze(-1) * self.commands_scale[3],
@@ -370,22 +370,18 @@ class D1HHeightCommand(LeggedRobot):
         if self.cfg.domain_rand.disturbance and (self.common_step_counter % self.cfg.domain_rand.disturbance_interval == 0):
             self._disturbance_robots()
 
-        self._update_height_command()
+        # 更新实际高度
+        self.last_base_height = self.base_height.clone()
+        self.base_height = self._get_base_heights()
 
-        self.last_target_height = self.target_height.clone()
-        self.target_height = torch.clamp(
-            self.target_height + self.commands[:, 4] * self.dt,
-            self.cfg.rewards.height_target_min,
-            self.cfg.rewards.height_target_max,
-        )
-
-    def _update_height_command(self):
-        """P controller: generate vz command from height_goal - target_height error."""
+        # 积分速度命令更新目标高度
         if self.cfg.commands.num_commands >= 5:
-            height_kp = getattr(self.cfg.commands, "height_goal_kp", 1.0)
-            height_error = self.height_goal - self.target_height
-            lin_vel_z_range = self.command_ranges.get("lin_vel_z", [-0.1, 0.1])
-            self.commands[:, 4] = torch.clip(height_kp * height_error, lin_vel_z_range[0], lin_vel_z_range[1])
+            self.last_target_height = self.target_height.clone()
+            self.target_height = torch.clamp(
+                self.target_height + self.commands[:, 4] * self.dt,
+                self.cfg.rewards.height_target_min,
+                self.cfg.rewards.height_target_max,
+            )
 
     def _resample_commands(self, env_ids):
         if len(env_ids) == 0:
@@ -422,19 +418,27 @@ class D1HHeightCommand(LeggedRobot):
                 self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1],
                 (len(ang_ids), 1), device=self.device).squeeze(1)
 
+        # 高度命令：直接采样速度命令，参照 d1_flat_new_config 设计
         if self.cfg.commands.num_commands >= 5:
-            height_goal_mask = torch.rand(len(env_ids), device=self.device) < getattr(self.cfg.commands, "height_goal_prob", 0.3)
-            height_goal_ids = env_ids[height_goal_mask]
-            hold_height_ids = env_ids[~height_goal_mask]
-            if len(height_goal_ids) > 0:
-                self.height_goal[height_goal_ids] = torch_rand_float(
+            sampled_vz = torch_rand_float(
+                self.command_ranges['lin_vel_z'][0], self.command_ranges['lin_vel_z'][1],
+                (len(env_ids), 1), device=self.device).squeeze(1)
+            zero_mask = torch.rand(len(env_ids), device=self.device) < getattr(self.cfg.commands, "zero_height_cmd_prob", 0.3)
+            self.commands[env_ids, 4] = torch.where(zero_mask, torch.zeros(len(env_ids), device=self.device), sampled_vz)
+
+            # vz_cmd=0 环境：target_height 保持不变，随机初始化以训练在任意高度保持静止
+            # vz_cmd≠0 环境：从默认高度开始，让命令积分
+            zero_height_ids = env_ids[zero_mask]
+            nonzero_height_ids = env_ids[~zero_mask]
+            if len(zero_height_ids) > 0:
+                self.target_height[zero_height_ids] = torch_rand_float(
                     self.cfg.rewards.height_target_min,
                     self.cfg.rewards.height_target_max,
-                    (len(height_goal_ids), 1), device=self.device).squeeze(1)
-            if len(hold_height_ids) > 0:
-                self.height_goal[hold_height_ids] = self.target_height[hold_height_ids]
+                    (len(zero_height_ids), 1), device=self.device).squeeze(1)
+            if len(nonzero_height_ids) > 0:
+                self.target_height[nonzero_height_ids] = self.cfg.rewards.base_height_target
 
-        self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+        # self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
 
     def _update_command_curriculum(self, env_ids):
         """ Implements a curriculum of increasing commands
@@ -458,6 +462,19 @@ class D1HHeightCommand(LeggedRobot):
             if torch.mean(self.episode_sums["tracking_lin_vel"][env_ids]) / self.max_episode_length > 0.8 * self.reward_scales["tracking_lin_vel"]:
                 self.command_ranges["lin_vel_x"][0] = np.clip(self.command_ranges["lin_vel_x"][0] - 0.5, -self.cfg.commands.max_curriculum, 0.)
                 self.command_ranges["lin_vel_x"][1] = np.clip(self.command_ranges["lin_vel_x"][1] + 0.5, 0., self.cfg.commands.max_curriculum)
+
+        if getattr(self.cfg.commands, "stand_still_curriculum", False):
+            max_ss = getattr(self.cfg.commands, "max_stand_still", 0.15)
+            warmup = getattr(self.cfg.commands, "stand_still_warmup_ratio", 0.5)
+            runner_cfg = getattr(self.cfg, "runner", None)
+            if runner_cfg is not None:
+                max_iter = runner_cfg.max_iterations * runner_cfg.num_steps_per_env
+            else:
+                max_iter = 10000 * 24  # fallback default
+            progress = min(self.common_step_counter / max(max_iter * warmup, 1), 1.0)
+            ss_ratio = max_ss * progress
+            remaining = 1.0 - ss_ratio
+            self.cfg.commands.commands_proportion = [remaining * 0.35, remaining * 0.35, remaining * 0.30, ss_ratio]
 
     #------------ reward functions----------------
     def _reward_tracking_lin_vel_x(self):
