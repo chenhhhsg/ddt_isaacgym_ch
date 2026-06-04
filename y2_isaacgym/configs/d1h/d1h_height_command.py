@@ -387,38 +387,35 @@ class D1HHeightCommand(LeggedRobot):
         if len(env_ids) == 0:
             return
 
-        # Planar command categories: x_only, x+yaw, yaw_only, stand_still.
-        command_select = torch.rand(len(env_ids), device=self.device)
-        cp = torch.tensor(self.cfg.commands.commands_proportion, device=self.device)
-        cp = cp / torch.clamp(cp.sum(), min=1e-6)
-
-        sel_x = command_select < cp[0]
-        sel_x_yaw = (command_select >= cp[0]) & (command_select < cp[:2].sum())
-        sel_yaw = (command_select >= cp[:2].sum()) & (command_select < cp[:3].sum())
-        sel_stand = ~(sel_x | sel_x_yaw | sel_yaw)
-
         self.commands[env_ids, :] = 0.0
 
-        x_ids = torch.cat([env_ids[sel_x], env_ids[sel_x_yaw]])
-        ang_ids = torch.cat([env_ids[sel_yaw], env_ids[sel_x_yaw]])
-
-        self.commands[x_ids, 0] = torch_rand_float(
+        # 独立采样水平命令
+        self.commands[env_ids, 0] = torch_rand_float(
             self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1],
-            (len(x_ids), 1), device=self.device).squeeze(1)
-        if self.cfg.commands.heading_command:
-            non_ang_ids = env_ids[~(sel_yaw | sel_x_yaw)]
-            if len(non_ang_ids) > 0:
-                forward = quat_apply(self.base_quat[non_ang_ids], self.forward_vec[non_ang_ids])
-                self.commands[non_ang_ids, 3] = torch.atan2(forward[:, 1], forward[:, 0])
-            self.commands[ang_ids, 3] = torch_rand_float(
-                self.command_ranges["heading"][0], self.command_ranges["heading"][1],
-                (len(ang_ids), 1), device=self.device).squeeze(1)
-        else:
-            self.commands[ang_ids, 2] = torch_rand_float(
-                self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1],
-                (len(ang_ids), 1), device=self.device).squeeze(1)
+            (len(env_ids), 1), device=self.device).squeeze(1)
 
-        # 高度命令：直接采样速度命令，参照 d1_flat_new_config 设计
+        if "lin_vel_y" in self.command_ranges:
+            self.commands[env_ids, 1] = torch_rand_float( self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+
+        if self.cfg.commands.heading_command:
+            self.commands[env_ids, 3] = torch_rand_float( self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        else:
+            self.commands[env_ids, 2] = torch_rand_float( self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+
+        # 水平静止：概率性将 x, y, yaw 命令置零（不影响高度）
+        zero_command_prob = getattr(self.cfg.commands, "zero_command_prob", 0.1)
+        zero_command_mask = torch.rand(len(env_ids), device=self.device) < zero_command_prob
+        zero_command_ids = env_ids[zero_command_mask]
+        if len(zero_command_ids) > 0:
+            self.commands[zero_command_ids, :3] = 0.0  # x, y, yaw 置零
+            if self.cfg.commands.heading_command and self.commands.shape[1] > 3:
+                forward = quat_apply(self.base_quat[zero_command_ids], self.forward_vec[zero_command_ids])
+                self.commands[zero_command_ids, 3] = torch.atan2(forward[:, 1], forward[:, 0])
+
+        # 速度命令过小则置零
+        self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+
+        # 高度命令：独立采样（原逻辑）
         if self.cfg.commands.num_commands >= 5:
             sampled_vz = torch_rand_float(
                 self.command_ranges['lin_vel_z'][0], self.command_ranges['lin_vel_z'][1],
@@ -426,8 +423,8 @@ class D1HHeightCommand(LeggedRobot):
             zero_mask = torch.rand(len(env_ids), device=self.device) < getattr(self.cfg.commands, "zero_height_cmd_prob", 0.3)
             self.commands[env_ids, 4] = torch.where(zero_mask, torch.zeros(len(env_ids), device=self.device), sampled_vz)
 
-            # vz_cmd=0 环境：target_height 保持不变，随机初始化以训练在任意高度保持静止
-            # vz_cmd≠0 环境：从默认高度开始，让命令积分
+            # vz_cmd=0 环境：随机初始化 target_height
+            # vz_cmd≠0 环境：从默认高度开始积分
             zero_height_ids = env_ids[zero_mask]
             nonzero_height_ids = env_ids[~zero_mask]
             if len(zero_height_ids) > 0:
@@ -437,8 +434,6 @@ class D1HHeightCommand(LeggedRobot):
                     (len(zero_height_ids), 1), device=self.device).squeeze(1)
             if len(nonzero_height_ids) > 0:
                 self.target_height[nonzero_height_ids] = self.cfg.rewards.base_height_target
-
-        # self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
 
     def _update_command_curriculum(self, env_ids):
         """ Implements a curriculum of increasing commands

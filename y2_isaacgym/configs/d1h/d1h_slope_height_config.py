@@ -65,21 +65,21 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
         max_curriculum_x_back = 2.0
         num_commands = 5  # lin_vel_x, lin_vel_y, ang_vel_yaw, heading, lin_vel_z
         resampling_time = 5.  # time before command are changed[s]
-        heading_command = True  # if true: compute ang vel command from heading error
+        heading_command = False  # if true: compute ang vel command from heading error
         global_reference = False
-        height_goal_prob = 0.3
+        zero_height_cmd_prob = 0.3
 
-        # Command category proportions: [x_only, x+yaw, yaw_only, stand_still].
-        commands_proportion = [0.35, 0.30, 0.30, 0.05]
+        # Command category proportions: [x, y, xy, turn, x+turn, xy+turn, stand_still].
+        commands_proportion = [0.30, 0.0, 0.0, 0.30, 0.30, 0.0, 0.1]
         stand_still_curriculum = False  # gradually increase stand_still proportion
-        max_stand_still = 0.05  # final stand_still proportion
-        stand_still_warmup_ratio = 0.5  # reach max_stand_still at this fraction of total training
+        max_stand_still = 0.1  # final stand_still proportion
+        stand_still_warmup_ratio = 0.8  # reach max_stand_still at this fraction of total training
         class ranges:
             lin_vel_x = [-1.0, 1.0]  # min max [m/s]
-            lin_vel_y = [0.0, 0.0]  # min max [m/s]
+            lin_vel_y = [-0.0, 0.0]  # min max [m/s]
             ang_vel_yaw = [-1.0, 1.0]  # min max [rad/s]
             heading = [-3.14, 3.14]
-            lin_vel_z = [-0.2, 0.2]  # min max [m/s]
+            lin_vel_z = [-0.1, 0.1]  # min max [m/s]
 
     class asset( LeggedRobotCfg.asset ):
         file = '{ROOT_DIR}/resources/d1h/urdf/robot.urdf'
@@ -117,8 +117,8 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
             tracking_lin_vel_x = 15.0
             tracking_lin_vel_y = 0.0
             tracking_ang_vel = 10.0
-            tracking_height_velocity = 0.5
-            lin_vel_z = -2.0
+            tracking_height_velocity = 0.0
+            lin_vel_z = -0.0
             orientation = -3.0
             ang_vel_xy = -0.05
             dof_thigh_vel = -0.05
@@ -132,8 +132,9 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
 
             stand_still_wheel = -1.0
             stand_still_base = -3.0
-            wheel_vel_diff = -1.0
+            wheel_vel_diff = -3.0
 
+            extreme_height_walk = 0.5
             # finetune
             collision_head = -5.0
             body_pos_to_feet_x = 0.5
@@ -141,7 +142,7 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
             body_feet_distance_y = -3.0
             body_symmetry_y = 0.1
             body_symmetry_z = 0.3
-            no_jump = -1.0
+            no_jump = -0.0
             collision_hard = -10.0
         
 
@@ -177,6 +178,7 @@ class D1HSlopeHeightCfg( LeggedRobotCfg ):
 
     class domain_rand(LeggedRobotCfg.domain_rand):
         randomize_friction = True
+        # friction_range = [0.2, 2.75]
         friction_range = [0.1, 1.0]
         randomize_restitution = False
         restitution_range = [0.0, 1.0]
@@ -235,8 +237,8 @@ class D1HSlopeHeightCfgPPO( LeggedRobotCfgPPO ):
         policy_class_name = 'ActorCriticBarlowTwins'
         runner_class_name = 'OnConstraintPolicyRunner'
         algorithm_class_name = 'NP3O'
-        save_interval = 3000
-        max_iterations = 6000
+        save_interval = 10000
+        max_iterations = 10000
         num_steps_per_env = 24
         resume = False
         resume_path = ''
@@ -244,6 +246,13 @@ class D1HSlopeHeightCfgPPO( LeggedRobotCfgPPO ):
 
 class D1HSlopeHeight(D1HHeightCommand):
 
+    def _target_height_extreme_proximity(self):
+        h_min = float(self.cfg.rewards.height_target_min)
+        h_max = float(self.cfg.rewards.height_target_max)
+        half_span = max(h_max - h_min, 1e-6) * 0.5
+        mid = 0.5 * (h_min + h_max)
+        return torch.clamp(torch.abs(self.target_height - mid) / half_span, 0.0, 1.0)
+    
     def _is_standing(self):
         no_xy_cmd = torch.norm(self.commands[:, :2], dim = 1) < 0.1
         no_yaw_cmd = torch.abs(self.commands[:, 2]) < 0.1
@@ -251,10 +260,15 @@ class D1HSlopeHeight(D1HHeightCommand):
     
     ## 使用stand_still_vel + base_height 设置默认高度 or stand_still 设置
     def _reward_lin_vel_z(self):
-        # Penalize z axis base linear velocity when no height command
+        # Penalize z axis base linear velocity when not climbing
+        # 爬坡时需要z速度，不应惩罚
         if self.cfg.commands.num_commands >= 5:
             has_height_cmd = (torch.abs(self.commands[:, 4]) > 0.01).float()
-            mask = 1.0 - has_height_cmd  # no cmd -> 1 (penalize), has cmd -> 0 (allow)
+            # 用实际高度变化判断是否在爬坡
+            actual_vz = torch.abs(self.base_height - self.last_base_height) / self.dt
+            is_climbing = (actual_vz > 0.02).float()  # 高度变化超过2cm/s视为爬坡
+            # 没有高度命令 且 没在爬坡 时才惩罚
+            mask = (1.0 - has_height_cmd) * (1.0 - is_climbing)
         else:
             mask = 1.0
         return torch.clamp(-self.projected_gravity[:, 2], 0, 0.7) / 0.7 * mask * torch.square(self.base_lin_vel[:, 2])
@@ -292,9 +306,14 @@ class D1HSlopeHeight(D1HHeightCommand):
 
     def _reward_tracking_height_velocity(self):
         # 辅助跟踪速度奖励函数
-        lin_vel_z_cmd = self.commands[:, 4]  # P控制器生成的速度命令
-        height_vel_error = torch.square(lin_vel_z_cmd - self.base_lin_vel[:, 2])
-        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp( -height_vel_error / 1e-4)
+        lin_vel_z_cmd = self.commands[:, 4]  # 速度命令
+        # 爬坡时放松跟踪：用实际高度变化门控
+        actual_vz = torch.abs(self.base_height - self.last_base_height) / self.dt
+        is_climbing = (actual_vz > 0.02).float()
+        # 爬坡时用实际速度作为目标，避免无谓惩罚
+        effective_cmd = torch.where(is_climbing.bool(), self.base_lin_vel[:, 2], lin_vel_z_cmd)
+        height_vel_error = torch.square(effective_cmd - self.base_lin_vel[:, 2])
+        return torch.clamp(-self.projected_gravity[:, 2], 0, 1) * torch.exp(-height_vel_error / 1e-4)
 
     def _reward_stand_still_wheel(self):
         cmd_still = self._is_standing().float()
@@ -324,3 +343,17 @@ class D1HSlopeHeight(D1HHeightCommand):
     def _reward_collision_hard(self):
         contact_force = torch.norm(self.contact_forces[:, self.penalised_contact_indices, :], dim=-1)
         return torch.sum((contact_force > 100.).float(), dim=1)
+
+    def _reward_extreme_height_walk(self):
+        prox = self._target_height_extreme_proximity()
+        cmd_x_gate = (torch.abs(self.commands[:, 0]) > 0.1).float()
+
+        height_error = torch.square(self._get_base_heights() - self.target_height)
+        height_ok = torch.exp(-height_error / self.cfg.rewards.tracking_height_sigma)
+
+        lin_vel_x_error = torch.square(self.commands[:, 0] - self.base_lin_vel[:, 0])
+        walk = torch.exp(-lin_vel_x_error / self.cfg.rewards.tracking_sigma)
+
+        upright = torch.clamp(-self.projected_gravity[:, 2], 0, 1)
+
+        return prox * cmd_x_gate * height_ok * upright * walk
